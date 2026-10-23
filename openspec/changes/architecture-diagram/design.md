@@ -197,10 +197,26 @@ it is testable in plain Node:
   `render(id, source)` and takes the `svg` from the result. The adapter targets
   that shape because it is mermaid's, and the docs state it so another renderer
   can match it. A failed import is an `error`, never a throw
-- `sanitizeSvg(text, {scopeId, deps}) -> {el, css, dropped, error}` — parses as
-  `image/svg+xml`, rebuilds against the allowlist, and returns the element plus
-  the **extracted, filtered, scoped** CSS as text. `dropped` counts elements,
-  attributes and declarations, so the panel can say the diagram was altered
+- `sanitizeSvg(text, {scopeId, deps}) -> {el, css, inlineStyles, dropped, error}`
+  — parses as `image/svg+xml`, rebuilds against the allowlist, and returns the
+  element plus the **extracted, filtered, scoped** CSS as text. `inlineStyles`
+  carries the filtered `style` attribute declarations, already applied with
+  `setProperty` and handed back because a `cloneNode` would otherwise lose
+  them, which matters for PNG export. `dropped` is
+  `{elements, attributes, declarations, rules, total}`: a dropped CSS **rule**
+  is worth distinguishing from a dropped attribute, because a rule can change
+  how the whole diagram looks
+- Every error carries `kind` and a boolean `fallbackable`, true only when the
+  renderer module could not be imported. The panel switches on that flag rather
+  than matching on message text, which is the difference between a contract and
+  a coincidence
+- Nothing leaves the CSS scoper unscoped. A missing or invalid `scopeId`, a
+  selector that cannot be scoped safely, or an at-rule whose body prefixing
+  cannot scope (`@font-face`, `@keyframes`, `@property`, `@import`) drops that
+  rule and counts it. `applyScopedCss` is a no-op where constructed stylesheets
+  are unavailable, and deliberately has **no** `<style>` element fallback, since
+  that would require the `style-src 'unsafe-inline'` this mechanism exists to
+  avoid
 - `applyScopedCss(css, {deps}) -> stop()` — a constructed stylesheet, adopted on
   the document, which `style-src` does not govern. `stop()` removes it
 - `serializeSvg(el) -> string`
