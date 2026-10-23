@@ -1,0 +1,110 @@
+# Example overlay for YOUR repository: QuickPortal with a diagram rendered in
+# the page by a renderer you name.
+#
+# YOU PROBABLY DO NOT NEED THIS OVERLAY. There are two ways to get a diagram
+# on the page and only this one touches the deployment:
+#
+#   * `diagram.src` pointing at an SVG you rendered yourself and committed
+#     beside your config. It imports nothing, needs no policy change, and no
+#     overlay: put the SVG in the quickportal-config ConfigMap and set
+#     `diagram.src`. Prefer this.
+#   * `diagram.renderer.url` plus `diagram.source`, which has the PAGE render
+#     your diagram source in the browser. That means importing a module
+#     QuickPortal did not ship, which `script-src 'self'` forbids. This
+#     overlay is that case.
+#
+# QuickPortal cannot bundle a renderer, and that is a measurement rather than a
+# preference: the usual one is 2.7MB of JavaScript against the 1MiB ConfigMap
+# limit that is the whole delivery envelope. See docs/DIAGRAM.md.
+#
+# So it needs TWO changes and neither works alone:
+#
+#   1. this overlay, which widens the portal's own Content-Security-Policy so
+#      the browser will let the page import a module from that origin at all,
+#      and
+#   2. `diagram.renderer.url` and `diagram.source` in config.yaml, which is
+#      what makes the page render anything.
+#
+# Both are below. If you copy only one: with (2) alone the browser refuses the
+# import under this policy and the panel says the diagram needs that origin;
+# with (1) alone nothing changes at all, which is the safe half.
+#
+# As with examples/kustomize, this cannot be rendered from inside the
+# QuickPortal repository -- the QuickPortal kustomization is at the repository
+# root, so an overlay stored beneath it would reference its own parent and
+# kustomize rejects that as a cycle. Copy this directory into your repository,
+# where there is no such relationship, and point the resource at a tag.
+#
+# Every hostname here is a reserved placeholder and has to be replaced.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: quickportal
+
+resources:
+  # Pin a tag, never a branch.
+  - https://git.example.com/example-org/quickportal.git//?ref=v0.2.0
+
+configMapGenerator:
+  # Your config, with the diagram section. The renderer URL here has to be
+  # covered by the origin in the patch below.
+  #
+  # Note that this is the same ConfigMap that holds your bookmarks, and the
+  # same one that is deliberately not hashed: editing the diagram source is an
+  # edit to this ConfigMap and does not roll the pod. The diagram shares the
+  # 1MiB ConfigMap limit with the rest of your config.
+  - name: quickportal-config
+    behavior: replace
+    files:
+      - config.yaml
+    options:
+      disableNameSuffixHash: true
+
+patches:
+  # Widen `script-src` by replacing ONE key of the server-config ConfigMap.
+  #
+  # Only script-src.inc is replaced. security-headers.inc, which holds the
+  # actual Content-Security-Policy, is left exactly as QuickPortal ships it, so
+  # upgrades keep bringing you policy fixes and there is never a second copy of
+  # the policy to drift. The ConfigMap is content-hashed, so patching it rolls
+  # the pod by itself.
+  #
+  # The value is `'self'` followed by a space-separated list of ORIGINS:
+  # scheme://host[:port], no trailing slash and no path.
+  #
+  #   * KEEP `'self'`. It is not optional and there is no default underneath
+  #     this value: the whole application is served from this origin, so
+  #     dropping it stops the portal itself from running. This is the one
+  #     mistake here with a spectacular symptom rather than a subtle one.
+  #   * a path is matched as a prefix, and a renderer pulls further chunks from
+  #     its own origin on demand, so list the origin, not the module's path.
+  #   * a subdomain is a different origin; `https://cdn.example.com` does not
+  #     permit `https://assets.example.com`.
+  #   * `http://` origins are blocked as mixed content when the portal itself
+  #     is served over https, whatever this says.
+  #   * never `https:` or `*`: that permits the page to execute anything it can
+  #     reach and there is then no point having the directive.
+  #
+  # `style-src` is NOT widened here and must not be. Renderer output depends on
+  # a stylesheet the renderer emits, and the page extracts it, filters it,
+  # scopes it to the diagram and adopts it through the CSSOM -- which
+  # `style-src` does not govern -- precisely so this policy stays strict.
+  #
+  # Verify what you shipped rather than what you meant to ship:
+  #
+  #   kustomize build . | grep -A2 'script-src.inc'
+  #   # and against the running pod:
+  #   kubectl --context <your-context> -n quickportal port-forward svc/quickportal 8080:80
+  #   curl -sI http://127.0.0.1:8080/ | tr ';' '\n' | grep script-
+  - target:
+      version: v1
+      kind: ConfigMap
+      name: quickportal-server-config
+    patch: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: quickportal-server-config
+      data:
+        script-src.inc: |
+          set $quickportal_script_src "'self' https://cdn.example.com";

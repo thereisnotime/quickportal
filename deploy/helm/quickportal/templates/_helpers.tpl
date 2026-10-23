@@ -87,6 +87,103 @@ message can say what to do.
 {{- end -}}
 
 {{/*
+The value of the CSP `script-src` directive: where the page may load scripts
+from. "'self'" unless diagram.rendererOrigins lists something, in which case it
+is "'self'" followed by those origins.
+
+Note the asymmetry with frameSrc, which renders its list verbatim: `'self'` is
+always first here and is not optional. The entire application is served from
+this origin, so a value without it stops the portal running at all. An entry of
+`'self'` is accepted and dropped rather than duplicated.
+
+This renders a value, never a policy. The policy itself exists once, in
+files/nginx/security-headers.inc, shared byte for byte with the kustomize base.
+`style-src` is not configurable and is not rendered here: see that file for why
+a renderer's stylesheet does not need it to move.
+*/}}
+{{- define "quickportal.scriptSrc" -}}
+{{- $diagram := .Values.diagram | default dict -}}
+{{- $origins := $diagram.rendererOrigins | default (list) -}}
+{{- if not (kindIs "slice" $origins) -}}
+{{- fail "diagram.rendererOrigins must be a list of origins, for example [\"https://cdn.example.com\"]" -}}
+{{- end -}}
+{{- $out := list "'self'" -}}
+{{- range $o := $origins -}}
+{{- if not (kindIs "string" $o) -}}
+{{- fail (printf "diagram.rendererOrigins: %v is not a string; each entry is an origin like \"https://cdn.example.com\"" $o) -}}
+{{- end -}}
+{{- if ne $o "'self'" -}}
+{{- if not (regexMatch "^https?://(?:\\*\\.)?[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?$" $o) -}}
+{{- fail (printf "diagram.rendererOrigins: %q is not an origin.\n  An origin is scheme://host[:port] -- no trailing slash and no path, because CSP matches a path as a prefix and a chunk the renderer pulls from a sibling path would then be refused.\n  A subdomain is a different origin; write \"https://*.example.com\" if the wildcard is what you mean.\n  \"https:\" and \"*\" are refused on purpose: they permit the page to execute anything it can reach, which is the whole thing this directive exists to stop.\n  \"'self'\" is accepted but unnecessary: it is always included, and a renderer served from the portal's own origin needs no entry here at all." $o) -}}
+{{- end -}}
+{{- $out = append $out $o -}}
+{{- end -}}
+{{- end -}}
+{{- join " " $out -}}
+{{- end -}}
+
+{{/*
+Returns the configured diagram renderer URL if no entry of
+diagram.rendererOrigins permits its origin, and nothing otherwise.
+
+A URL that is not absolute is a same-origin path, which `'self'` always covers,
+so it is never reported. `'self'` as an entry means the same thing explicitly.
+*/}}
+{{- define "quickportal.uncoveredRenderer" -}}
+{{- $origins := .origins -}}
+{{- $url := .url | default "" -}}
+{{- $origin := regexFind "^https?://[^/]+" $url -}}
+{{- if $origin -}}
+{{- $ok := false -}}
+{{- range $o := $origins -}}
+{{- if eq $o $origin -}}
+{{- $ok = true -}}
+{{- else if contains "://*." $o -}}
+{{- $parts := splitList "://" $o -}}
+{{- if and (hasPrefix (printf "%s://" (first $parts)) $origin) (hasSuffix (trimPrefix "*" (index $parts 1)) $origin) -}}
+{{- $ok = true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not $ok -}}{{ $url }}{{ end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Refuses to render the half-configured state for the diagram renderer, exactly
+as assertEmbedding does for framing: a config naming a renderer the served
+policy forbids the page to import.
+
+The browser's version of this message is a panel saying the diagram needs an
+origin, which is better than embedding's empty rectangle but still a round trip
+through a deploy, so it is worth failing a template over.
+
+Only checked when the chart renders the config itself. With
+config.existingConfigMap the config is not ours to read, and the page's own CSP
+violation report is then the only warning available.
+*/}}
+{{- define "quickportal.assertDiagramRenderer" -}}
+{{- $cfgValues := .Values.config | default dict -}}
+{{- $origins := (.Values.diagram | default dict).rendererOrigins | default (list) -}}
+{{- if and $cfgValues.create (not $cfgValues.existingConfigMap) -}}
+{{- $cfg := fromYaml ($cfgValues.inline | default "{}") -}}
+{{- if and (kindIs "map" $cfg) (not (hasKey $cfg "Error")) -}}
+{{- $diagram := $cfg.diagram | default dict -}}
+{{- if kindIs "map" $diagram -}}
+{{- $renderer := $diagram.renderer | default dict -}}
+{{- if kindIs "map" $renderer -}}
+{{- $bad := include "quickportal.uncoveredRenderer" (dict "url" ($renderer.url | default "") "origins" $origins) | trim -}}
+{{- if $bad -}}
+{{- $policy := include "quickportal.scriptSrc" . -}}
+{{- fail (printf "the diagram renderer is half-configured.\n  config.inline sets diagram.renderer.url: %s\n  the policy this chart would serve is `script-src %s`, which forbids the page from importing it, so the panel will say the diagram needs that origin and show no diagram.\n  Add that renderer's origin to diagram.rendererOrigins (scheme://host[:port], no path), self-host the renderer on the portal's own origin, or drop diagram.renderer and supply a rendered SVG in diagram.src instead." $bad $policy) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Walks config.inline and returns the URLs of items marked `embed: true` whose
 origin no entry of embedding.frameOrigins permits. Recurses, because groups
 nest.

@@ -1,0 +1,59 @@
+# A config with the diagram panel, on the path that imports nothing.
+#
+# `diagram.src` points at an SVG you rendered yourself -- with any tool, the
+# portal has no opinion -- and committed beside this file as another key of the
+# same ConfigMap. Nothing is fetched until someone opens the panel, nothing is
+# imported, and the deployment needs no change at all. Prefer this.
+#
+# The other path, where the PAGE renders diagram source using a renderer module
+# you name, is in examples/kustomize/diagram/config.yaml, because it also needs
+# the `script-src` patch that ships next to it. docs/DIAGRAM.md covers both.
+version: 1
+title: Diagram
+subtitle: An SVG you rendered, delivered beside your bookmarks
+
+diagram:
+  # Optional panel heading. Falls back to a generic one when absent.
+  title: Architecture
+
+  # Served path of the SVG. `./config/` is where your own ConfigMap is exposed,
+  # so this is another key of the same ConfigMap that holds this file:
+  #
+  #   configMapGenerator:
+  #     - name: quickportal-config
+  #       behavior: replace
+  #       files:
+  #         - config.yaml
+  #         - diagram.svg
+  #       options:
+  #         disableNameSuffixHash: true
+  #
+  # Same volume as this file, so the same update path: committing a new SVG
+  # takes effect without rolling the pod, and the panel shows it the next time
+  # it is opened.
+  src: ./config/diagram.svg
+
+  # Refuse anything larger, in bytes. Default 512KiB. It exists because the
+  # diagram shares this 1MiB ConfigMap with this config, and because inlining a
+  # megabyte of SVG makes the page janky long before a cluster refuses it. Over
+  # the limit the panel says the actual and permitted sizes and shows no
+  # diagram; the bookmarks are unaffected. It also caps a renderer's output,
+  # where the cost is not visible in what you commit.
+  maxBytes: 524288
+
+groups:
+  - name: Infrastructure
+    icon: "🧱"
+    items:
+      - name: Dashboards
+        url: https://dashboards.example.com
+        description: Dashboards and alerts
+        icon: auto
+      - name: Logs
+        url: https://logs.example.org/explore
+        description: Log search
+        icon: auto
+  - name: Status
+    items:
+      - name: Status page
+        url: https://status.example.org

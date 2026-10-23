@@ -140,6 +140,72 @@ embedding:
   #   helm template quickportal deploy/helm/quickportal | grep -A1 frame-src.inc
   frameOrigins: []
 
+# The diagram panel: an optional architecture diagram shown beside the
+# bookmarks. Configuring the diagram itself is a config.inline matter (see
+# docs/CONFIGURATION.md); the only thing that belongs here is the one policy
+# change the renderer path needs.
+#
+# There are two ways to get a diagram on the page and only one of them touches
+# this section:
+#
+#   1. `diagram.src` in your config, pointing at an SVG you rendered yourself
+#      and committed beside your config. Imports nothing, needs no value here,
+#      and is the preferred path.
+#   2. `diagram.renderer.url` plus `diagram.source` in your config, which has
+#      the PAGE render your diagram source in the browser. That means importing
+#      a module this project did not ship, which `script-src 'self'` forbids,
+#      so it needs rendererOrigins below.
+#
+# The project cannot bundle a renderer and this is not an oversight: the usual
+# one is 2.7MB of JavaScript against a 1MiB ConfigMap limit, which is the entire
+# delivery envelope. See docs/DIAGRAM.md.
+diagram:
+  # Origins the page is permitted to load scripts from, on top of its own.
+  # Rendered as the `script-src` value with `'self'` always first.
+  #
+  # Empty means `script-src 'self'`: the page runs only the modules that came
+  # out of this chart, which is exactly what it served before this setting
+  # existed.
+  #
+  #   rendererOrigins:
+  #     - https://cdn.example.com
+  #
+  # An entry is scheme://host[:port], with no trailing slash and no path.
+  # Anything else is refused at template time.
+  #
+  # Things that are easy to get subtly wrong:
+  #
+  #   * `'self'` is always included and is not optional -- the whole app is
+  #     served from this origin. An entry of `'self'` is accepted and dropped
+  #     rather than duplicated.
+  #   * a path is matched as a prefix, and a renderer pulls further chunks from
+  #     its own origin on demand, so list the ORIGIN, not the module's path.
+  #   * a subdomain is a different origin; `https://cdn.example.com` does not
+  #     permit `https://assets.example.com`.
+  #   * `http://` origins are blocked as mixed content when the portal is
+  #     served over https, whatever this policy says.
+  #   * `https:` and `*` are refused on purpose. They would let the page
+  #     execute anything it can reach, to help the few who opt in.
+  #
+  # Self-hosting the renderer beats a public CDN. If you serve it from the
+  # portal's own origin, `'self'` already covers it and this stays empty.
+  #
+  # The chart refuses to render the half-configured state it can see: if
+  # config.inline names a `diagram.renderer.url` whose origin no entry here
+  # permits, `helm template` fails, naming the renderer and the policy it would
+  # have served. It cannot be checked when you point config.existingConfigMap
+  # at a ConfigMap the chart does not render.
+  #
+  # `style-src` is deliberately NOT configurable, even though a renderer's
+  # output depends on a stylesheet it emits. The page extracts that CSS,
+  # filters it, scopes it to the diagram and adopts it through the CSSOM, which
+  # `style-src` does not govern, so the policy stays `style-src 'self'`.
+  #
+  # Check the result rather than the intent:
+  #
+  #   helm template quickportal deploy/helm/quickportal | grep -A1 script-src.inc
+  rendererOrigins: []
+
 service:
   type: ClusterIP
   port: 80

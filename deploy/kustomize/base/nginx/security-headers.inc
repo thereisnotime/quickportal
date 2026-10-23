@@ -20,16 +20,32 @@
 # second add_header for it anywhere: nginx would emit both and browsers enforce
 # the intersection, which is the kind of bug you find months later.
 #
-# One directive is a variable: $quickportal_frame_src, which is who the portal
-# may frame. Its value is set in frame-src.inc, which default.conf includes at
-# server level, and it is "'none'" as shipped. The variable is deliberately not
-# given a fallback here: if frame-src.inc is missing from the mounted
-# conf.d, nginx refuses to start with `unknown "quickportal_frame_src"
-# variable` rather than quietly serving a policy with a hole in it.
+# Two directives are variables, each set in its own file that default.conf
+# includes at server level, and each shipping the value the policy stated
+# literally before the file existed:
+#
+#   $quickportal_frame_src   -- who the portal may frame. frame-src.inc,
+#                               "'none'" as shipped.
+#   $quickportal_script_src  -- where scripts may be loaded from. script-src.inc,
+#                               "'self'" as shipped. Widened only to let the
+#                               diagram panel import a renderer the operator
+#                               names, because the project cannot ship one.
+#
+# Neither variable is given a fallback here, deliberately: if either include is
+# missing from the mounted conf.d, nginx refuses to start with
+# `unknown "quickportal_..." variable` rather than quietly serving a policy with
+# a hole in it.
+#
+# style-src stays 'self' and is NOT configurable, which is a deliberate
+# asymmetry with script-src. A renderer's output carries a <style> element its
+# appearance depends on, and inlining that would need 'unsafe-inline' for the
+# whole page. The application extracts that CSS instead, filters it, scopes it
+# to the diagram and adopts it through the CSSOM, which style-src does not
+# govern. That machinery exists precisely so this directive never has to move.
 #
 # frame-ancestors stays 'none' unconditionally. That is who may frame US, which
 # is a different question from who we may frame, and it is not configurable.
-add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; form-action 'none'; frame-src $quickportal_frame_src; object-src 'none'; frame-ancestors 'none'; base-uri 'none'" always;
+add_header Content-Security-Policy "default-src 'self'; script-src $quickportal_script_src; style-src 'self'; img-src 'self' https: data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; form-action 'none'; frame-src $quickportal_frame_src; object-src 'none'; frame-ancestors 'none'; base-uri 'none'" always;
 
 add_header X-Content-Type-Options "nosniff" always;
 # frame-ancestors covers modern browsers; X-Frame-Options is for the rest.

@@ -56,6 +56,7 @@ configMapGenerator:
       - src/assets/reload.js
       - src/assets/sets.js
       - src/assets/frames.js
+      - src/assets/diagram.js
       - src/assets/state.js
       # Vendored YAML parser. It sits next to the app assets so every basename
       # under src/ stays unique, which the flat served tree requires, and so a
@@ -65,17 +66,24 @@ configMapGenerator:
   # The server config. Also hashed: the cache headers are load-bearing, so a
   # change to them should roll the pod just like an app change.
   #
-  # frame-src.inc holds the one CSP directive a deployment is meant to change:
-  # which origins the portal may frame. It ships as `'none'` and embedding is
-  # off. To permit origins, patch this ConfigMap's frame-src.inc key from your
-  # own kustomization -- see examples/kustomize/embedding/ for the whole thing.
-  # Do not replace security-headers.inc to do it: that file is the only copy of
-  # the policy, and a second copy is a policy that will drift.
+  # Two of these files hold the only CSP directives a deployment is meant to
+  # change, one directive each, and both ship forbidding the thing they gate:
+  #
+  #   frame-src.inc   which origins the portal may frame. `'none'`, so
+  #                   embedding is off. See examples/kustomize/embedding/.
+  #   script-src.inc  where scripts may be loaded from. `'self'`, so the
+  #                   diagram panel imports no renderer. See
+  #                   examples/kustomize/diagram/.
+  #
+  # To widen either one, patch that ONE key of this ConfigMap from your own
+  # kustomization. Do not replace security-headers.inc to do it: that file is
+  # the only copy of the policy, and a second copy is a policy that will drift.
   - name: quickportal-server-config
     files:
       - deploy/kustomize/base/nginx/default.conf
       - deploy/kustomize/base/nginx/security-headers.inc
       - deploy/kustomize/base/nginx/frame-src.inc
+      - deploy/kustomize/base/nginx/script-src.inc
 
   # Your config, shipped with a working default so a fresh install renders a
   # real page instead of an empty one.

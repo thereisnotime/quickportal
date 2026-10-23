@@ -29,6 +29,30 @@ embedding:                       # optional; only matters for embedded items
                                  # optional; points the "why can a frame stay
                                  # blank" help at your own runbook
 
+diagram:                         # optional; the architecture diagram panel
+  title: Architecture            # optional panel heading
+  src: ./config/diagram.svg      # an SVG you rendered yourself, delivered as
+                                 # another key of this same ConfigMap. Fetched
+                                 # only when the panel is first opened.
+  maxBytes: 524288               # refuse a larger file (default: 512KiB). The
+                                 # diagram shares the 1MiB ConfigMap with this
+                                 # config and the app.
+                                 #
+                                 # The alternative to `src` is having the page
+                                 # render diagram source itself, which needs a
+                                 # renderer module QuickPortal does not ship
+                                 # and a `script-src` change in the deployment:
+                                 #
+                                 #   renderer:
+                                 #     url: https://cdn.example.com/mermaid@11.12.0/dist/mermaid.esm.min.mjs
+                                 #     options: {securityLevel: strict}
+                                 #   source: |
+                                 #     flowchart TD
+                                 #       a[Ingress] --> b[Portal]
+                                 #
+                                 # See examples/kustomize/diagram/ and
+                                 # docs/DIAGRAM.md. `src` needs neither.
+
 groups:
   - id: media                    # optional; derived by slugifying the name
                                  # within its parent path when absent. An

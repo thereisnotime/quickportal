@@ -13,12 +13,17 @@ env:
   KUSTOMIZE_VERSION: v5.8.3
   KUBECONFORM_VERSION: v0.8.0
   # Keep in step with the budget documented in docs/CONFIGURATION.md. The real
-  # limit is the 1MiB ConfigMap ceiling, shared with the user's own config, so
-  # this still fails long before a cluster does. Raised from 300KiB when the
-  # embedding work left 13KB of headroom: a ceiling with no room left stops
-  # being a budget and starts being an obstacle, and about 105KiB of the total
-  # is the vendored YAML parser rather than our own code.
-  SRC_CEILING_BYTES: 393216
+  # limit is the 1MiB hard ceiling on the app ConfigMap, which holds src/ and
+  # nothing else, so this still fails long before a cluster does. About 105KiB
+  # of the total is the vendored YAML parser rather than our own code.
+  #
+  # Raised twice, each time because a ceiling with no room left stops being a
+  # budget and starts being an obstacle: from 300KiB when embedding left 13KB
+  # of headroom, and to half the hard limit when the diagram work went past
+  # 384KiB. The diagram panel is the last thing that should be fighting a
+  # self-imposed ceiling, since the sanitiser is the part of it that must not
+  # be trimmed to save bytes.
+  SRC_CEILING_BYTES: 524288
 
 jobs:
   test:
@@ -46,6 +51,7 @@ jobs:
             examples/config/*.yaml \
             examples/kustomize/config.yaml \
             examples/kustomize/embedding/config.yaml \
+            examples/kustomize/diagram/config.yaml \
             deploy/kustomize/base/config/config.yaml
 
       - name: A broken config is rejected
@@ -136,9 +142,10 @@ jobs:
     name: Manifests
     runs-on: ubuntu-24.04
     steps:
-      # Full history and tags: the embedding checks below compare what this
-      # branch renders and serves against the v0.1.0 tag, and a shallow
-      # checkout has neither the tag nor the tree behind it.
+      # Full history and tags: the checks below compare what this branch
+      # renders and serves against the v0.1.0 tag (embedding) and the v0.2.0
+      # tag (the diagram renderer), and a shallow checkout has neither the tags
+      # nor the trees behind them.
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
@@ -218,6 +225,10 @@ jobs:
           # through the server-config template.
           helm lint deploy/helm/quickportal --strict \
             --set 'embedding.frameOrigins={https://dashboards.example.com}'
+          # And with the renderer switch on, which is the other configurable
+          # directive and the other branch of the same template.
+          helm lint deploy/helm/quickportal --strict \
+            --set 'diagram.rendererOrigins={https://cdn.example.com}'
           helm template quickportal deploy/helm/quickportal > /dev/null
           helm template quickportal deploy/helm/quickportal \
             --set ingress.enabled=true \
@@ -283,42 +294,75 @@ jobs:
                       return m.group(1)
               sys.exit("::error::no Content-Security-Policy add_header found")
 
-          def frame_src(text):
-              hits = [re.match(r'set \$quickportal_frame_src "([^"]*)";$', l) for l in live(text)]
+          def one_set(text, var, where):
+              hits = [re.match(r'set \$%s "([^"]*)";$' % var, l) for l in live(text)]
               hits = [h for h in hits if h]
               if len(hits) != 1:
-                  sys.exit(f"::error::frame-src.inc must contain exactly one `set $quickportal_frame_src` directive, found {len(hits)}")
+                  sys.exit(f"::error::{where} must contain exactly one `set ${var}` directive, found {len(hits)}")
               return hits[0].group(1)
+
+          # Every configurable directive, and the value it must ship. The include file
+          # is derived from the variable name rather than listed, so a third one cannot
+          # be added without appearing here: that is the point of this step.
+          #
+          # This is the cumulative check. It resolves the policy all the way back to
+          # the FIRST release, so each feature that makes a directive configurable has
+          # to prove it changed nothing for the people who do not use it -- not just
+          # against the release before it, which would let a slow drift through one
+          # release at a time.
+          SWITCHES = {"quickportal_frame_src": "'none'", "quickportal_script_src": "'self'"}
+
+          def resolve(policy):
+              """Substitute every $quickportal_* variable with the value its file ships."""
+              for var in re.findall(r"\$(quickportal_[a-z_]+)", policy):
+                  if var not in SWITCHES:
+                      sys.exit(f"::error::the policy uses ${var}, which this check does not know about. "
+                               f"Add it to SWITCHES with the value it must ship, or the default policy is unverified.")
+                  inc = "deploy/kustomize/base/nginx/%s.inc" % var[len("quickportal_"):].replace("_", "-")
+                  policy = policy.replace("$" + var, one_set(open(inc).read(), var, inc))
+              return policy
 
           base = subprocess.run(["git", "show", "v0.1.0:deploy/kustomize/base/nginx/security-headers.inc"],
                                 capture_output=True, text=True, check=True).stdout
           head = open("deploy/kustomize/base/nginx/security-headers.inc").read()
-          inc = open("deploy/kustomize/base/nginx/frame-src.inc").read()
 
-          shipped = frame_src(inc)
-          effective = csp(head).replace("$quickportal_frame_src", shipped)
+          effective = resolve(csp(head))
           want = csp(base)
           print("  v0.1.0   :", want)
           print("  effective:", effective)
           problems = []
-          if shipped != "'none'":
-              problems.append(f"frame-src.inc ships {shipped!r}; the shipped default must be 'none'")
+          for var, must in SWITCHES.items():
+              inc = "deploy/kustomize/base/nginx/%s.inc" % var[len("quickportal_"):].replace("_", "-")
+              body = open(inc).read()
+              shipped = one_set(body, var, inc)
+              if shipped != must:
+                  problems.append(f"{inc} ships {shipped!r}; the shipped default must be {must!r}")
+              # The chart rewrites this exact line. If it is not unique, it rewrites the
+              # wrong thing, or an example in a comment.
+              sentinel = 'set $%s "%s";' % (var, must)
+              if body.count(sentinel) != 1:
+                  problems.append(f"{sentinel!r} must appear exactly once in {inc}; the chart rewrites that line")
+              directive = var[len("quickportal_"):].replace("_", "-")
+              if csp(head).count(directive) != 1:
+                  problems.append(f"{directive} appears more than once in the policy")
           if effective != want:
               problems.append("the default policy is no longer byte-identical to v0.1.0")
           if "frame-ancestors 'none'" not in csp(head):
               problems.append("frame-ancestors 'none' is gone from the policy")
-          if csp(head).count("frame-src") != 1:
-              problems.append("frame-src appears more than once in the policy")
-          # The chart rewrites this exact line. If it is not unique, it rewrites the
-          # wrong thing, or an example in a comment.
-          sentinel = "set $quickportal_frame_src \"'none'\";"
-          if inc.count(sentinel) != 1:
-              problems.append(f"{sentinel!r} must appear exactly once in frame-src.inc; the chart rewrites that line")
+          # style-src is deliberately NOT in SWITCHES: a renderer's CSS is adopted
+          # through the CSSOM, which style-src does not govern, precisely so this never
+          # has to move.
+          if "style-src 'self'" not in csp(head):
+              problems.append("style-src is no longer 'self'")
+          if "unsafe-inline" in csp(head) or "unsafe-eval" in csp(head):
+              problems.append("the policy now contains an unsafe-* keyword")
           if problems:
               for p in problems:
                   print("::error::" + p)
               sys.exit(1)
-          print("  default policy is byte-identical to v0.1.0, and frame-src is the only configurable directive")
+          print("  default policy is byte-identical to v0.1.0;",
+                "configurable directives are exactly", sorted(
+                    v[len("quickportal_"):].replace("_", "-") for v in SWITCHES))
           PY
 
       - name: The default render is v0.1.0 plus the switch and nothing else
@@ -364,16 +408,27 @@ jobs:
               else:
                   print(f"  {k[0]}/{k[1]}: identical to v0.1.0")
 
-          # The nginx files: comments may change, directives may not, except for the two
-          # lines this feature is allowed to touch.
+          # The nginx files: comments may change, directives may not, except for the
+          # lines the configurable-directive features are allowed to touch.
+          #
+          # One entry per directive that has been made configurable since v0.1.0: the
+          # include file it lives in, and the literal in the policy it replaced. A new
+          # one cannot be added without a line here, which is the point -- this step is
+          # what stops "make one more directive configurable" from becoming routine.
+          SWITCHES = [
+              ("frame-src.inc", "frame-src 'none'", "frame-src $quickportal_frame_src"),
+              ("script-src.inc", "script-src 'self'", "script-src $quickportal_script_src"),
+          ]
+
           oc = o[("ConfigMap", "quickportal-server-config")].get("data", {})
           nc = n[("ConfigMap", "quickportal-server-config")].get("data", {})
           added = set(nc) - set(oc)
           removed = set(oc) - set(nc)
+          allowed_adds = {f for f, _, _ in SWITCHES}
           if removed:
               problems.append(f"nginx files removed since v0.1.0: {sorted(removed)}")
-          if added != {"frame-src.inc"}:
-              problems.append(f"unexpected nginx files added since v0.1.0: {sorted(added - {'frame-src.inc'})}")
+          if not added <= allowed_adds:
+              problems.append(f"unexpected nginx files added since v0.1.0: {sorted(added - allowed_adds)}")
 
           def directives(text):
               out = []
@@ -383,9 +438,8 @@ jobs:
                       out.append(s)
               return out
 
-          PERMITTED = {
-              ("default.conf", "+", "include /etc/nginx/conf.d/frame-src.inc;"),
-          }
+          PERMITTED = {("default.conf", "+", f"include /etc/nginx/conf.d/{f};")
+                       for f, _, _ in SWITCHES}
           for name in sorted(set(oc) & set(nc)):
               a, b = directives(oc[name]), directives(nc[name])
               if a == b:
@@ -399,13 +453,20 @@ jobs:
                       print(f"  {name}: permitted added directive(s) {b[j1:j2]}")
                       continue
                   if tag == "replace" and i2 - i1 == 1 and j2 - j1 == 1:
-                      # The only permitted rewrite is the frame-src value in the CSP, and
-                      # only to the variable the deployment sets. Everything else in the
-                      # policy, frame-ancestors above all, has to be untouched.
+                      # The only permitted rewrites are the literals above becoming the
+                      # variables the deployment sets. They are applied together, because
+                      # they all live on the one Content-Security-Policy line. Everything
+                      # else in the policy -- frame-ancestors and style-src above all --
+                      # has to come out byte-identical.
                       before, after = a[i1], b[j1]
-                      if (before.replace("frame-src 'none'", "frame-src $quickportal_frame_src") == after
-                              and "frame-src 'none'" in before):
-                          print(f"  {name}: frame-src made configurable, rest of the policy byte-identical")
+                      rewritten, applied = before, []
+                      for _, literal, variable in SWITCHES:
+                          if literal in rewritten:
+                              rewritten = rewritten.replace(literal, variable)
+                              applied.append(literal.split()[0])
+                      if applied and rewritten == after:
+                          print(f"  {name}: {', '.join(applied)} made configurable, "
+                                "rest of the policy byte-identical")
                           continue
                   problems.append(f"{name}: unpermitted directive change\n  v0.1.0: {a[i1:i2]}\n  HEAD:   {b[j1:j2]}")
 
@@ -413,7 +474,7 @@ jobs:
               for p in problems:
                   print("::error::" + p)
               sys.exit(1)
-          print("default render is v0.1.0 plus the frame-src switch and nothing else")
+          print("default render is v0.1.0 plus the configurable-directive switches and nothing else")
           PY
 
       # The checks above read files. This one reads the wire, which is what
@@ -519,8 +580,17 @@ jobs:
           # the rest of this job rendered, not the last commit.
           tar -c --exclude=./.git --exclude=./node_modules . | tar -x -C "$work/quickportal"
           cp -r examples/kustomize/embedding "$work/embedding"
-          sed -i 's#https://git.example.com/example-org/quickportal.git//?ref=v0.1.0#../quickportal#' \
+          # Version-agnostic on purpose. The example pins whatever the current
+          # release tag is, and a sed naming one tag silently stops matching
+          # the next time that pin moves -- leaving kustomize to try the real
+          # placeholder URL, which is not the thing under test.
+          sed -i -E 's#https://git\.example\.com/example-org/quickportal\.git//\?ref=[A-Za-z0-9._-]+#../quickportal#' \
             "$work/embedding/kustomization.yaml"
+          if grep -q 'git.example.com' "$work/embedding/kustomization.yaml"; then
+            echo "::error::the resource pin in examples/kustomize/embedding was not rewritten to the local copy"
+            grep -n 'git.example.com' "$work/embedding/kustomization.yaml"
+            exit 1
+          fi
           ( cd "$work/embedding" && kustomize build . ) > "$RUNNER_TEMP/render-embedding.yaml"
           kubeconform -strict -summary -schema-location default "$RUNNER_TEMP/render-embedding.yaml"
           python3 - "$RUNNER_TEMP/render-embedding.yaml" <<'PY'
@@ -728,3 +798,541 @@ jobs:
               sys.exit(1)
           print(f"both ship {len(k)} identical nginx files")
           PY
+
+      # ------------------------------------------------------------------
+      # The diagram renderer: the deployment half of that switch.
+      #
+      # `script-src` is configurable so that an operator who wants the page to
+      # render diagram source can name a renderer module, which the project
+      # cannot ship: the usual one is 2.7MB against a 1MiB ConfigMap limit.
+      # Everything below exists to stop that configurability costing anything
+      # to the people who never use it. The baseline is the v0.2.0 tag, the
+      # release before this feature, read from the tag rather than from a
+      # checked-in fixture, because a fixture drifts along with the code it is
+      # meant to be guarding.
+      #
+      # `style-src` is NOT configurable and these checks assert it stays
+      # 'self'. The application extracts a renderer's CSS and adopts it
+      # through the CSSOM precisely so that directive never has to move.
+      # ------------------------------------------------------------------
+
+      - name: The default script-src is byte-identical to v0.2.0
+        run: |
+          python3 - <<'PY'
+          import re, subprocess, sys
+
+          def live(text):
+              """Directive lines only. A commented-out example is not configuration, and
+              reading one as if it were is exactly the mistake these files warn about."""
+              return [l.strip() for l in text.splitlines()
+                      if l.strip() and not l.strip().startswith("#")]
+
+          def csp(text):
+              for line in live(text):
+                  m = re.search(r'add_header Content-Security-Policy "([^"]*)"', line)
+                  if m:
+                      return m.group(1)
+              sys.exit("::error::no Content-Security-Policy add_header found")
+
+          def one_set(text, var, where):
+              hits = [re.match(r'set \$%s "([^"]*)";$' % var, l) for l in live(text)]
+              hits = [h for h in hits if h]
+              if len(hits) != 1:
+                  sys.exit(f"::error::{where} must contain exactly one `set ${var}` directive, found {len(hits)}")
+              return hits[0].group(1)
+
+          def at_tag(path):
+              return subprocess.run(["git", "show", f"v0.2.0:{path}"],
+                                    capture_output=True, text=True, check=True).stdout
+
+          base = at_tag("deploy/kustomize/base/nginx/security-headers.inc")
+          base_frame = at_tag("deploy/kustomize/base/nginx/frame-src.inc")
+          head = open("deploy/kustomize/base/nginx/security-headers.inc").read()
+          frame = open("deploy/kustomize/base/nginx/frame-src.inc").read()
+          script = open("deploy/kustomize/base/nginx/script-src.inc").read()
+
+          shipped_frame = one_set(frame, "quickportal_frame_src", "frame-src.inc")
+          shipped_script = one_set(script, "quickportal_script_src", "script-src.inc")
+
+          # Resolve every variable on both sides, so the comparison is of the policy a
+          # browser is handed and not of the spelling it is written in.
+          want = csp(base).replace("$quickportal_frame_src",
+                                   one_set(base_frame, "quickportal_frame_src", "v0.2.0 frame-src.inc"))
+          effective = (csp(head).replace("$quickportal_frame_src", shipped_frame)
+                                .replace("$quickportal_script_src", shipped_script))
+          print("  v0.2.0   :", want)
+          print("  effective:", effective)
+
+          problems = []
+          if shipped_script != "'self'":
+              problems.append(f"script-src.inc ships {shipped_script!r}; the shipped default must be 'self'")
+          if effective != want:
+              problems.append("the default policy is no longer byte-identical to v0.2.0")
+          if csp(head).count("script-src") != 1:
+              problems.append("script-src appears more than once in the policy")
+          # The asymmetry that keeps the policy strict for everyone: a renderer's
+          # stylesheet is adopted through the CSSOM, which style-src does not govern, so
+          # this directive must never become configurable or be widened.
+          if "style-src 'self'" not in csp(head):
+              problems.append("style-src is no longer 'self'; a renderer's CSS is adopted "
+                              "through the CSSOM precisely so it does not have to move")
+          if "unsafe-inline" in csp(head) or "unsafe-eval" in csp(head):
+              problems.append("the policy now contains an unsafe-* keyword")
+          if "frame-ancestors 'none'" not in csp(head):
+              problems.append("frame-ancestors 'none' is gone from the policy")
+          # The chart rewrites this exact line. If it is not unique, it rewrites the
+          # wrong thing, or an example in a comment.
+          sentinel = "set $quickportal_script_src \"'self'\";"
+          if script.count(sentinel) != 1:
+              problems.append(f"{sentinel!r} must appear exactly once in script-src.inc; the chart rewrites that line")
+          if problems:
+              for p in problems:
+                  print("::error::" + p)
+              sys.exit(1)
+          print("  default policy is byte-identical to v0.2.0; script-src is configurable, style-src is not")
+          PY
+
+      - name: The default render is v0.2.0 plus the script-src switch and nothing else
+        run: |
+          rm -rf "$RUNNER_TEMP/v020"
+          mkdir -p "$RUNNER_TEMP/v020"
+          git archive v0.2.0 | tar -x -C "$RUNNER_TEMP/v020"
+          ( cd "$RUNNER_TEMP/v020" && kustomize build . ) > "$RUNNER_TEMP/render-v020.yaml"
+          kustomize build . > "$RUNNER_TEMP/render-head.yaml"
+          python3 - "$RUNNER_TEMP/render-v020.yaml" "$RUNNER_TEMP/render-head.yaml" <<'PY'
+          import sys, yaml, re, difflib
+
+          def docs(p):
+              return [d for d in yaml.safe_load_all(open(p)) if d]
+
+          def key(d):
+              n = re.sub(r"-[0-9a-z]{10}$", "", d["metadata"]["name"])
+              return (d["kind"], n)
+
+          def norm(s):
+              # kustomize rewrites hashed ConfigMap references; compare shape, not hash.
+              return re.sub(r"(quickportal-(?:app|server-config))-[0-9a-z]{10}", r"\1", s)
+
+          o = {key(d): d for d in docs(sys.argv[1])}
+          n = {key(d): d for d in docs(sys.argv[2])}
+          problems = []
+          if set(o) != set(n):
+              problems.append(f"document set changed: only-v0.2.0={sorted(set(o)-set(n))} only-HEAD={sorted(set(n)-set(o))}")
+
+          # Documents that may legitimately differ, and nothing else may. The app
+          # ConfigMap is in here because the feature ships application code too; this
+          # step is about the deployment, and the app files have their own checks.
+          ALLOWED = {("ConfigMap", "quickportal-app"), ("ConfigMap", "quickportal-server-config")}
+
+          for k in sorted(set(o) & set(n)):
+              if k in ALLOWED:
+                  continue
+              a = norm(yaml.safe_dump(o[k], sort_keys=True))
+              b = norm(yaml.safe_dump(n[k], sort_keys=True))
+              if a != b:
+                  problems.append(f"{k[0]}/{k[1]} is not byte-identical to v0.2.0:\n" +
+                                  "".join(difflib.unified_diff(a.splitlines(1), b.splitlines(1), "v0.2.0", "HEAD")))
+              else:
+                  print(f"  {k[0]}/{k[1]}: identical to v0.2.0")
+
+          # The user's own ConfigMap is where a diagram is delivered, and it must stay
+          # unhashed: a hashed name would roll the pod every time the diagram changed,
+          # which is the thing the delivery shape exists to avoid.
+          cfg = n[("ConfigMap", "quickportal-config")]["metadata"]["name"]
+          if cfg != "quickportal-config":
+              problems.append(f"quickportal-config is now hashed ({cfg}); a diagram update would roll the pod")
+
+          # The diagram must never be delivered in the application ConfigMap: that one
+          # IS hashed, so it would roll the pod, and it would make the diagram ours
+          # rather than the operator's.
+          app = n[("ConfigMap", "quickportal-app")].get("data", {})
+          stray = [f for f in app if f.endswith(".svg")]
+          if stray:
+              problems.append(f"the app ConfigMap ships {stray}; a diagram belongs in the operator's own ConfigMap")
+
+          oc = o[("ConfigMap", "quickportal-server-config")].get("data", {})
+          nc = n[("ConfigMap", "quickportal-server-config")].get("data", {})
+          added = set(nc) - set(oc)
+          removed = set(oc) - set(nc)
+          if removed:
+              problems.append(f"nginx files removed since v0.2.0: {sorted(removed)}")
+          if added != {"script-src.inc"}:
+              problems.append(f"unexpected nginx files added since v0.2.0: {sorted(added - {'script-src.inc'})}")
+
+          def directives(text):
+              return [l.strip() for l in text.splitlines()
+                      if l.strip() and not l.strip().startswith("#")]
+
+          PERMITTED = {
+              ("default.conf", "+", "include /etc/nginx/conf.d/script-src.inc;"),
+          }
+          for name in sorted(set(oc) & set(nc)):
+              a, b = directives(oc[name]), directives(nc[name])
+              if a == b:
+                  print(f"  {name}: directives identical to v0.2.0")
+                  continue
+              sm = difflib.SequenceMatcher(None, a, b)
+              for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                  if tag == "equal":
+                      continue
+                  if tag == "insert" and all((name, "+", x) in PERMITTED for x in b[j1:j2]):
+                      print(f"  {name}: permitted added directive(s) {b[j1:j2]}")
+                      continue
+                  if tag == "replace" and i2 - i1 == 1 and j2 - j1 == 1:
+                      # The only permitted rewrite is the script-src value in the CSP, and
+                      # only to the variable the deployment sets. Everything else in the
+                      # policy, style-src above all, has to be untouched.
+                      before, after = a[i1], b[j1]
+                      if (before.replace("script-src 'self'", "script-src $quickportal_script_src") == after
+                              and "script-src 'self'" in before):
+                          print(f"  {name}: script-src made configurable, rest of the policy byte-identical")
+                          continue
+                  problems.append(f"{name}: unpermitted directive change\n  v0.2.0: {a[i1:i2]}\n  HEAD:   {b[j1:j2]}")
+
+          if problems:
+              for p in problems:
+                  print("::error::" + p)
+              sys.exit(1)
+          print("default render is v0.2.0 plus the script-src switch and nothing else")
+          PY
+
+      # The checks above read files. This one reads the wire, which is what
+      # actually reaches a browser, and is the only way to show that an nginx
+      # variable substituted into the policy produces the same bytes as the
+      # literal it replaced.
+      - name: The served headers are byte-identical to v0.2.0
+        run: |
+          set -euo pipefail
+          img=$(grep -oE 'docker\.io/nginxinc/nginx-unprivileged:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}' \
+                deploy/kustomize/base/deployment.yaml | head -1)
+          echo "serving with $img"
+          root="$RUNNER_TEMP/hdr2"; rm -rf "$root"; mkdir -p "$root/html" "$root/cfg" "$root/v020" "$root/render"
+          # ONE document root for all three servers, on purpose. Only the nginx
+          # config differs between the runs, so a Content-Length difference
+          # would be the app's files changing rather than the policy, and this
+          # check is about the policy.
+          find src -type f -exec cp {} "$root/html/" \;
+          cp deploy/kustomize/base/config/config.yaml "$root/cfg/config.yaml"
+          git archive v0.2.0 | tar -x -C "$root/v020"
+          cp deploy/kustomize/base/nginx/* "$root/render/"
+          # shellcheck disable=SC2016  # $quickportal_script_src is nginx's variable, not the shell's
+          printf 'set $quickportal_script_src "'"'"'self'"'"' https://cdn.example.com";\n' > "$root/render/script-src.inc"
+
+          free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
+          cleanup() { docker rm -f qp-v020 qp-head2 qp-render >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          cleanup
+
+          serve() {
+            local name=$1 port=$2 conf=$3
+            docker run -d --name "$name" -p "127.0.0.1:$port:8080" \
+              -v "$conf:/etc/nginx/conf.d:ro" \
+              -v "$root/html:/usr/share/nginx/html:ro" \
+              -v "$root/cfg:/etc/quickportal:ro" "$img" >/dev/null
+          }
+          # Confirm it is OUR nginx answering on that port and not something
+          # else that happened to be listening. A port collision would
+          # otherwise compare this repository's headers against a stranger's.
+          confirm() {
+            local name=$1 port=$2
+            for _ in $(seq 1 60); do
+              if [ "$(curl -sf "http://127.0.0.1:$port/healthz" || true)" = "ok" ] \
+                 && curl -sfI "http://127.0.0.1:$port/healthz" | grep -qi '^cross-origin-opener-policy: same-origin'; then
+                return 0
+              fi
+              sleep 0.5
+            done
+            echo "::error::$name is not answering on 127.0.0.1:$port with QuickPortal's own responses"
+            docker logs "$name" 2>&1 | tail -20
+            return 1
+          }
+          p_v020=$(free_port); serve qp-v020   "$p_v020" "$root/v020/deploy/kustomize/base/nginx"
+          p_head=$(free_port); serve qp-head2  "$p_head" "$PWD/deploy/kustomize/base/nginx"
+          p_rnd=$(free_port);  serve qp-render "$p_rnd"  "$root/render"
+          confirm qp-v020   "$p_v020"
+          confirm qp-head2  "$p_head"
+          confirm qp-render "$p_rnd"
+
+          dump() {
+            for path in / /index.html /app.js /app.css /js-yaml.mjs /config/config.yaml /healthz /no-such-file; do
+              echo "### $path"
+              # Date, ETag, Last-Modified and Server vary per run or per file
+              # and say nothing about the policy.
+              curl -sS -D - -o /dev/null "http://127.0.0.1:$1$path" \
+                | grep -iv '^date:\|^etag:\|^last-modified:\|^server:\|^HTTP/' \
+                | sed 's/\r$//' | sort
+            done
+          }
+          dump "$p_v020" > "$root/v020.txt"
+          dump "$p_head" > "$root/head.txt"
+          dump "$p_rnd"  > "$root/render.txt"
+          if ! diff -u "$root/v020.txt" "$root/head.txt"; then
+            echo "::error::the default now serves different headers from v0.2.0"
+            exit 1
+          fi
+          echo "default headers identical to v0.2.0 across 8 paths"
+          # And with a renderer origin set, the only header that may differ is
+          # the CSP, and within it only script-src.
+          changed=$(diff "$root/head.txt" "$root/render.txt" | grep -E '^[<>]' | grep -civ 'content-security-policy' || true)
+          if [ "$changed" != 0 ]; then
+            echo "::error::setting a renderer origin changed a header other than Content-Security-Policy"
+            diff -u "$root/head.txt" "$root/render.txt" || true
+            exit 1
+          fi
+          if ! grep -q "script-src 'self' https://cdn.example.com; style-src 'self'" "$root/render.txt"; then
+            echo "::error::script-src did not end up listing exactly 'self' plus the configured origin, with style-src untouched"
+            grep -i content-security-policy "$root/render.txt" | head -1
+            exit 1
+          fi
+          echo "with a renderer origin set, the CSP is the only header that changes, and only in script-src"
+
+      - name: The diagram overlay example renders, with the default load restrictor
+        run: |
+          set -euo pipefail
+          # Same shape as the embedding overlay check: the overlay cannot be
+          # rendered in place, because it references the repository root, which
+          # is its own ancestor, and kustomize calls that a cycle. Copying it
+          # beside a copy of the repository is what a user's own repository
+          # looks like. No --load-restrictor: needing one would break the
+          # install promise.
+          work="$RUNNER_TEMP/overlay-diagram"; rm -rf "$work"; mkdir -p "$work/quickportal"
+          tar -c --exclude=./.git --exclude=./node_modules . | tar -x -C "$work/quickportal"
+          cp -r examples/kustomize/diagram "$work/diagram"
+          sed -i -E 's#https://git\.example\.com/example-org/quickportal\.git//\?ref=[A-Za-z0-9._-]+#../quickportal#' \
+            "$work/diagram/kustomization.yaml"
+          if grep -q 'git.example.com' "$work/diagram/kustomization.yaml"; then
+            echo "::error::the resource pin in examples/kustomize/diagram was not rewritten to the local copy"
+            exit 1
+          fi
+          ( cd "$work/diagram" && kustomize build . ) > "$RUNNER_TEMP/render-diagram.yaml"
+          kubeconform -strict -summary -schema-location default "$RUNNER_TEMP/render-diagram.yaml"
+          python3 - "$RUNNER_TEMP/render-diagram.yaml" <<'PY'
+          import re, sys, yaml
+
+          docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+          want = 'set $quickportal_script_src "\'self\' https://cdn.example.com";'
+          data, cfg = {}, {}
+          for d in docs:
+              if d["kind"] != "ConfigMap":
+                  continue
+              if "server-config" in d["metadata"]["name"]:
+                  data = d.get("data", {})
+              elif d["metadata"]["name"].endswith("quickportal-config"):
+                  cfg = yaml.safe_load(d["data"]["config.yaml"])
+          problems = []
+          got = (data.get("script-src.inc") or "").strip()
+          if got != want:
+              problems.append(f"the overlay did not set script-src.inc as documented; got {got!r}")
+          # The patch must replace one key and leave the policy itself alone.
+          policy = data.get("security-headers.inc", "")
+          if "script-src $quickportal_script_src" not in policy or "style-src 'self'" not in policy:
+              problems.append("the overlay patched security-headers.inc; it must only replace script-src.inc")
+          # The other switch must be untouched: this overlay is about scripts.
+          if '"\'none\'"' not in data.get("frame-src.inc", ""):
+              problems.append("the diagram overlay changed frame-src, which is a different feature")
+          # 'self' is not optional: without it the portal's own modules are refused and
+          # the whole page dies, which is the one spectacular mistake available here.
+          if "'self'" not in got:
+              problems.append("the overlay dropped 'self' from script-src; the portal's own modules would be refused")
+          # Both halves must ship together, or the example demonstrates the
+          # half-state it exists to cure.
+          renderer = (cfg.get("diagram") or {}).get("renderer") or {}
+          url = renderer.get("url") or ""
+          if not url:
+              problems.append("the overlay's config names no diagram.renderer.url, so it ships only the policy half")
+          if not (cfg.get("diagram") or {}).get("source"):
+              problems.append("the overlay's config has a renderer but no diagram.source to render")
+          origins = re.search(r'"(.*)"', got).group(1).split() if got else []
+          origin = re.match(r"https?://[^/]+", url)
+          if origin and origin.group(0) not in origins:
+              problems.append(f"the overlay names a renderer at {url} whose origin script-src does not permit: {origins}")
+          if problems:
+              for p in problems:
+                  print("::error::" + p)
+              sys.exit(1)
+          print(f"overlay permits exactly {origins}, names a renderer there, and ships source to render")
+          PY
+
+      - name: The chart's script-src switch touches exactly one directive
+        run: |
+          helm template quickportal deploy/helm/quickportal > "$RUNNER_TEMP/h-default2.yaml"
+          helm template quickportal deploy/helm/quickportal \
+            --set 'diagram.rendererOrigins={https://cdn.example.com,https://assets.example.org}' \
+            > "$RUNNER_TEMP/h-render.yaml"
+          python3 - "$RUNNER_TEMP/h-default2.yaml" "$RUNNER_TEMP/h-render.yaml" <<'PY'
+          import sys, yaml, difflib
+          def servercfg(path):
+              for d in yaml.safe_load_all(open(path)):
+                  if d and d["kind"] == "ConfigMap" and d["metadata"]["name"].endswith("-server-config"):
+                      return d.get("data", {})
+              sys.exit("::error::no server-config ConfigMap in " + path)
+
+          default, render = servercfg(sys.argv[1]), servercfg(sys.argv[2])
+          shipped = open("deploy/kustomize/base/nginx/script-src.inc").read()
+          problems = []
+
+          # 1. Unused means untouched: the chart must ship the file as the kustomize base
+          #    has it, not a re-rendered copy of it.
+          if default.get("script-src.inc") != shipped:
+              problems.append("with no rendererOrigins the chart does not ship script-src.inc verbatim:\n" +
+                  "".join(difflib.unified_diff(shipped.splitlines(1),
+                                               (default.get("script-src.inc") or "").splitlines(1),
+                                               "files/nginx/script-src.inc", "rendered")))
+          else:
+              print("  rendererOrigins empty: script-src.inc rendered byte-identical to the shipped file")
+
+          # 2. Setting it changes exactly one directive in exactly one file.
+          if set(default) != set(render):
+              problems.append(f"rendererOrigins changed the file set: {sorted(set(render) ^ set(default))}")
+          for name in sorted(set(default) & set(render)):
+              if name != "script-src.inc":
+                  if default[name] != render[name]:
+                      problems.append(f"rendererOrigins changed {name}, which it must never touch")
+                  else:
+                      print(f"  {name}: untouched by rendererOrigins")
+          diff = [l for l in difflib.unified_diff(default["script-src.inc"].splitlines(),
+                                                  render["script-src.inc"].splitlines(), n=0)
+                  if l[:1] in "+-" and not l.startswith(("---", "+++"))]
+          want = ['-set $quickportal_script_src "\'self\'";',
+                  '+set $quickportal_script_src "\'self\' https://cdn.example.com https://assets.example.org";']
+          if diff != want:
+              problems.append("rendererOrigins changed more than the one directive:\n  " + "\n  ".join(diff))
+          else:
+              print("  rendererOrigins set: exactly one directive line differs, 'self' first, then exactly the origins given")
+          if problems:
+              for p in problems:
+                  print("::error::" + p)
+              sys.exit(1)
+          PY
+
+      # A wrong origin here does not fail loudly at request time: the panel
+      # says the diagram needs that origin, which costs a deploy to discover.
+      # So the mistakes that can be caught at template time are caught there.
+      - name: A renderer origin that is not an origin is refused
+        run: |
+          status=0
+          for bad in 'https:' '*' 'https://cdn.example.com/npm/pkg@1/' 'https://cdn.example.com/' \
+                     'cdn.example.com' 'https://a.example.com https://b.example.com'; do
+            if helm template quickportal deploy/helm/quickportal \
+                 --set-string "diagram.rendererOrigins[0]=$bad" >/dev/null 2>&1; then
+              echo "::error::diagram.rendererOrigins accepted $bad"
+              status=1
+            else
+              echo "refused: $bad"
+            fi
+          done
+          for good in 'https://cdn.example.com' 'https://cdn.example.com:8443' 'https://*.example.com'; do
+            if helm template quickportal deploy/helm/quickportal \
+                 --set-string "diagram.rendererOrigins[0]=$good" >/dev/null 2>&1; then
+              echo "accepted: $good"
+            else
+              echo "::error::diagram.rendererOrigins refused the valid origin $good"
+              status=1
+            fi
+          done
+          # 'self' is always present, so an explicit entry is accepted and must not be
+          # emitted twice: a duplicated token is harmless to a browser but tells an
+          # operator reading the header that something is generating it badly.
+          out=$(helm template quickportal deploy/helm/quickportal \
+                  --set-string "diagram.rendererOrigins[0]='self'" 2>/dev/null \
+                | grep -E "^    set \\\$quickportal_script_src" || true)
+          if [ "$(echo "$out" | tr -cd "'" | wc -c)" != 2 ]; then
+            echo "::error::an explicit 'self' entry was duplicated into the directive: $out"
+            status=1
+          else
+            echo "accepted and not duplicated: 'self'"
+          fi
+          exit $status
+
+      # The coupling this feature invites getting half-right: a config naming a
+      # renderer the served policy forbids the page to import. The browser's
+      # version is a panel saying the diagram needs an origin, which is better
+      # than embedding's empty rectangle and still costs a deploy to find.
+      - name: The half-configured renderer state is refused
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/half-diagram.yaml" <<'YAML'
+          config:
+            inline: |
+              version: 1
+              title: Half-configured diagram
+              diagram:
+                title: Architecture
+                renderer:
+                  url: https://cdn.example.com/mermaid@11.12.0/dist/mermaid.esm.min.mjs
+                source: |
+                  flowchart TD
+                    ingress[Ingress] --> portal[Portal]
+              groups:
+                - name: Apps
+                  items:
+                    - name: Dashboards
+                      url: https://dashboards.example.com
+          YAML
+          status=0
+          expect_fail() {
+            if helm template quickportal deploy/helm/quickportal -f "$RUNNER_TEMP/half-diagram.yaml" "$@" >/dev/null 2>&1; then
+              echo "::error::the chart rendered a half-configured renderer state: $*"
+              status=1
+            else
+              echo "refused: ${*:-no renderer origins at all}"
+            fi
+          }
+          expect_pass() {
+            if helm template quickportal deploy/helm/quickportal -f "$RUNNER_TEMP/half-diagram.yaml" "$@" >/dev/null 2>&1; then
+              echo "rendered: $*"
+            else
+              echo "::error::the chart refused a correctly configured renderer state: $*"
+              helm template quickportal deploy/helm/quickportal -f "$RUNNER_TEMP/half-diagram.yaml" "$@" 2>&1 | tail -6
+              status=1
+            fi
+          }
+          # A renderer with no policy at all, and with a policy permitting the
+          # wrong origin -- the subtle half, where the operator thinks it is done.
+          expect_fail
+          expect_fail --set 'diagram.rendererOrigins={https://assets.example.org}'
+          # The right origin, and its wildcard form.
+          expect_pass --set 'diagram.rendererOrigins={https://cdn.example.com}'
+          expect_pass --set 'diagram.rendererOrigins={https://*.example.com}'
+          # The message has to name the renderer and the policy, or it sends the
+          # operator looking in the wrong file.
+          msg=$(helm template quickportal deploy/helm/quickportal -f "$RUNNER_TEMP/half-diagram.yaml" 2>&1 || true)
+          for want in 'mermaid.esm.min.mjs' "script-src 'self'" 'diagram.rendererOrigins'; do
+            if ! printf '%s' "$msg" | grep -qF "$want"; then
+              echo "::error::the failure message does not mention $want"
+              status=1
+            fi
+          done
+          # A same-origin renderer is covered by 'self' and needs no entry, so it must
+          # not be reported: a false alarm here would push operators to widen the
+          # policy they did not need to widen.
+          cat > "$RUNNER_TEMP/selfhost-diagram.yaml" <<'YAML'
+          config:
+            inline: |
+              version: 1
+              title: Self-hosted renderer
+              diagram:
+                renderer:
+                  url: ./config/mermaid.esm.min.mjs
+                source: |
+                  flowchart TD
+                    a[A] --> b[B]
+              groups:
+                - name: Apps
+                  items:
+                    - name: Dashboards
+                      url: https://dashboards.example.com
+          YAML
+          if helm template quickportal deploy/helm/quickportal -f "$RUNNER_TEMP/selfhost-diagram.yaml" >/dev/null 2>&1; then
+            echo "rendered: a same-origin renderer, with no origins configured"
+          else
+            echo "::error::the chart refused a same-origin renderer, which 'self' already permits"
+            status=1
+          fi
+          # The config the chart does not own cannot be checked, and must not
+          # be guessed at.
+          expect_pass --set config.create=false --set config.existingConfigMap=quickportal-config
+          # And the shipped values, which name no renderer, render as always.
+          helm template quickportal deploy/helm/quickportal >/dev/null
+          echo "shipped values render with the renderer off"
+          exit $status

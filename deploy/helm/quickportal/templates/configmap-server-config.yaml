@@ -4,22 +4,29 @@ the kustomize base can never drift. The cache headers in it are load-bearing:
 the config file is served revalidated so live reload works, and the assets are
 cacheable. A change rolls the pod via checksum/server-config.
 
-One file is not shipped verbatim: frame-src.inc, which holds the single CSP
-directive a deployment is meant to change. The shipped file sets it to 'none';
-when embedding.frameOrigins is set, the one `set` line is rewritten and every
-other byte of every other file, including the Content-Security-Policy in
+Two files are not shipped verbatim, and only two, each holding a single CSP
+directive a deployment is meant to change:
+
+  frame-src.inc   embedding.frameOrigins, 'none' as shipped
+  script-src.inc  diagram.rendererOrigins, 'self' as shipped
+
+When either value is set, the one `set` line in that one file is rewritten and
+every other byte of every other file, including the Content-Security-Policy in
 security-headers.inc, is left exactly as the kustomize base ships it.
 
 This is why the chart is not a second copy of the policy. It substitutes a
-value into a file it otherwise does not read. With frameOrigins empty it does
+value into a file it otherwise does not read. With both values empty it does
 not substitute at all, so the rendered ConfigMap is byte-identical to the one
-the chart rendered before this feature existed -- which CI asserts against the
-v0.1.0 tag rather than trusting this comment.
+the chart rendered before these features existed -- which CI asserts against
+the v0.1.0 and v0.2.0 tags rather than trusting this comment.
 */}}
 {{- include "quickportal.assertEmbedding" . -}}
+{{- include "quickportal.assertDiagramRenderer" . -}}
 {{- $frameSrc := include "quickportal.frameSrc" . -}}
-{{- /* The exact line the shipped frame-src.inc ends with. */ -}}
+{{- $scriptSrc := include "quickportal.scriptSrc" . -}}
+{{- /* The exact lines the shipped include files end with. */ -}}
 {{- $shipped := "set $quickportal_frame_src \"'none'\";" -}}
+{{- $shippedScript := "set $quickportal_script_src \"'self'\";" -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -35,6 +42,12 @@ data:
 {{- fail (printf "%s no longer contains %q, so the chart cannot tell which directive to rewrite. Fix the template rather than adding a second frame-src somewhere." (base $path) $shipped) }}
 {{- end }}
 {{ $body | replace $shipped (printf "set $quickportal_frame_src \"%s\";" $frameSrc) | indent 4 }}
+{{- else if and (eq (base $path) "script-src.inc") (ne $scriptSrc "'self'") }}
+{{- $body := $.Files.Get $path }}
+{{- if not (contains $shippedScript $body) }}
+{{- fail (printf "%s no longer contains %q, so the chart cannot tell which directive to rewrite. Fix the template rather than adding a second script-src somewhere." (base $path) $shippedScript) }}
+{{- end }}
+{{ $body | replace $shippedScript (printf "set $quickportal_script_src \"%s\";" $scriptSrc) | indent 4 }}
 {{- else }}
 {{ $.Files.Get $path | indent 4 }}
 {{- end }}

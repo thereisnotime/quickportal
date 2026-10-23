@@ -17,6 +17,8 @@ a pod restart and without a reload.
   naming the exact path rather than leaving you a blank screen.
 - Usable at 320px and on a 4K display, light and dark, keyboard driven.
 - **Optionally** open apps inside the page in a tab strip, off by default.
+- **Optionally** an architecture diagram panel with pan, zoom and export, from
+  an SVG you supply. Also off by default.
 - No CDN, no telemetry, no analytics, no outbound request you did not configure.
 
 ## Install
@@ -193,6 +195,62 @@ the app, the four ways an origin goes subtly wrong, and the third-party cookie
 problem that makes an embedded app on an unrelated domain refuse to stay logged
 in.
 
+## An architecture diagram
+
+The portal can show a diagram in a collapsible panel beside the bookmarks, with
+pan, zoom, fit-to-view and export to SVG and PNG:
+
+```yaml
+diagram:
+  title: Architecture
+  src: ./config/diagram.svg     # another key of your own ConfigMap
+```
+
+Render it with whatever you already use — the portal displays an SVG and has no
+opinion about where it came from — and commit it beside your config. A new
+diagram takes effect without rolling the pod, like a bookmark edit. It is
+inlined rather than put in an `<img>`, because pan and zoom need it in the
+document, so it is parsed and rebuilt against an allowlist: an SVG is executable
+content, and the panel tells you if anything was dropped rather than altering
+your diagram silently.
+
+### Why no renderer is bundled
+
+The obvious version of this feature is to vendor a browser renderer so you could
+write diagram source in your config and have it just work. That does not fit,
+and it is worth being plain about why rather than calling it a design choice:
+
+```
+mermaid.min.js        2,748,992 bytes
+ConfigMap hard limit  1,048,576 bytes
+```
+
+The renderer is 2.6 times the entire delivery envelope. QuickPortal has no image
+to build and no registry; the app *is* files in a ConfigMap, and a ConfigMap
+cannot hold 2.7MB. Every renderer worth having is in that order of magnitude,
+because the hard part is graph layout. So the choice was never "bundle it or
+not", it was "move the rendering to where there is no 1MiB limit", which is your
+CI or your laptop. The SVG you get is the same SVG the renderer would have
+produced.
+
+In-page rendering is still available, and it is the path most people want: set
+`diagram.renderer.url` to a renderer module **you** name and write `source` in
+your config. That means the page imports code this project did not ship, which
+`script-src 'self'` forbids, so like embedding it is off by default and takes a
+deployment-level change — `diagram.rendererOrigins` with Helm, or the patch in
+`examples/kustomize/diagram/`. Self-hosting the renderer beats a public CDN, and
+serving it from the portal's own origin needs no policy change at all.
+
+`style-src` stays `'self'` either way. A renderer's output depends on a
+stylesheet it emits, and rather than widen the policy for a picture, the page
+extracts that CSS, filters it, scopes it to the diagram and adopts it through
+the CSSOM, which `style-src` does not govern.
+
+[docs/DIAGRAM.md](docs/DIAGRAM.md) has both paths in full: the one-command CI
+step for a diagram language, the renderer contract, the allowlist and why it
+exists, the size budget, and why an exported PNG shows whatever font your
+browser substituted.
+
 ## Why there are no status indicators
 
 Every dashboard like this is asked for a green or red dot per service. QuickPortal
@@ -216,6 +274,14 @@ service account token mounted. The page is served under a strict
 Content-Security-Policy: `script-src 'self'`, `style-src 'self'`,
 `frame-ancestors 'none'`, and images limited to this origin plus HTTPS so your
 own favicons load.
+
+Two directives are configurable, each in its own file, each shipping the value
+that forbids the thing it gates: `frame-src 'none'` for embedding and
+`script-src 'self'` for a diagram renderer. There is one copy of the policy in
+the deployment and widening either directive does not touch it, so an install
+that uses neither feature serves byte-identical headers to the release before
+it existed — which CI asserts on the wire against the tag, not against a
+fixture. `style-src` is deliberately not in that list.
 
 There is no authentication. The page is static and visible to anyone who can
 reach it, so put it behind whatever your ingress already does.

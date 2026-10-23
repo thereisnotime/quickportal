@@ -11,11 +11,19 @@
 # config.yaml and edit the host in ingress.yaml. Every hostname here is a
 # reserved placeholder and has to be replaced.
 #
-# This overlay does NOT permit embedding: the portal keeps `frame-src 'none'`
-# and items open in browser tabs. If you want items to open as tabs inside the
-# portal, see embedding/ next to this file, which is this overlay plus the one
-# ConfigMap patch that widens the policy. It is kept separate on purpose, so
-# that copying the normal example cannot switch embedding on by accident.
+# This overlay changes nothing about the portal's Content-Security-Policy, so
+# the two optional features that need one stay off: `frame-src 'none'`, so
+# items open in browser tabs, and `script-src 'self'`, so the page imports
+# nothing. Each has its own overlay next to this file, which is this one plus
+# the single ConfigMap patch it needs:
+#
+#   embedding/   items open as tabs inside the portal (widens frame-src)
+#   diagram/     the page renders diagram source with a renderer you name
+#                (widens script-src). You do NOT need it to show a diagram --
+#                an SVG in `diagram.src` works from this plain overlay.
+#
+# They are kept separate on purpose, so that copying the normal example cannot
+# switch either on by accident.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

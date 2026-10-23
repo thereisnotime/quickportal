@@ -1,0 +1,72 @@
+# The config half of the diagram renderer switch.
+#
+# `diagram.renderer.url` names the module the page imports to turn
+# `diagram.source` into SVG. It only works if that module's origin is listed in
+# the script-src patch in kustomization.yaml next to this file.
+#
+# The URL below is a placeholder host, deliberately: this repository names only
+# reserved example domains. Replace it with wherever you actually serve the
+# renderer. The module is mermaid's ESM build, from the `mermaid` npm package,
+# and `url` is the path to `mermaid.esm.min.mjs` in whatever copy of it you
+# serve. Self-hosting that file beats pointing at a public CDN, and if you
+# serve it from the portal's own origin you can delete the patch entirely --
+# `'self'` already covers it.
+#
+# If you would rather not import anything at all, drop `renderer` and `source`,
+# render your diagram to SVG yourself, commit it beside this file in the same
+# ConfigMap, and set `diagram.src: ./config/diagram.svg`. That path needs no
+# patch and no policy change.
+version: 1
+title: Diagram example
+
+diagram:
+  # Optional heading on the panel.
+  title: Architecture
+
+  renderer:
+    url: https://cdn.example.com/mermaid@11.12.0/dist/mermaid.esm.min.mjs
+    # Passed straight to the renderer's own initialize(). These are mermaid's
+    # settings, not QuickPortal's.
+    #
+    # securityLevel: strict is worth keeping. The page sanitises the renderer's
+    # output regardless -- a renderer told to trust its input emits things the
+    # sanitiser then removes, and the panel reports how much it dropped, which
+    # reads like a bug when it is really this setting.
+    options:
+      theme: dark
+      securityLevel: strict
+      flowchart:
+        htmlLabels: false
+
+  # The diagram itself. Editing this is an edit to this ConfigMap, so it takes
+  # effect without rolling the pod, like the bookmarks.
+  source: |
+    flowchart TD
+      ingress[Ingress] --> portal[QuickPortal]
+      portal --> grafana[Dashboards]
+      portal --> logs[Logs]
+      grafana --> prom[(Metrics store)]
+      logs --> loki[(Log store)]
+
+  # Refuse a diagram larger than this. Defaults to 512KiB; it exists because
+  # the diagram shares the 1MiB ConfigMap with everything else in this file.
+  #
+  # On this path it caps what the RENDERER produces, checked before anything is
+  # inlined. The source above is a few hundred bytes, but what it renders into
+  # need not be, so this is the one part of the budget that writing source
+  # rather than committing an SVG does not get for free.
+  maxBytes: 524288
+
+groups:
+  - name: Infrastructure
+    items:
+      - name: Dashboards
+        url: https://dashboards.example.com
+        icon: auto
+      - name: Logs
+        url: https://logs.example.org/explore
+        icon: auto
+  - name: Status
+    items:
+      - name: Status page
+        url: https://status.example.org
