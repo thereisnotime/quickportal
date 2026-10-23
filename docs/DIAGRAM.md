@@ -401,6 +401,40 @@ Every failure degrades to a notice and leaves the bookmark tree working.
   remembered per browser and survive a config edit re-rendering the page.
 - **It is a viewer.** There is no editing in the browser.
 
+## Mermaid: set htmlLabels: false at both levels, or your labels vanish
+
+This is the one mermaid setting that is not optional, and it is not obvious.
+
+```yaml
+options:
+  theme: dark
+  securityLevel: strict
+  htmlLabels: false            # both of these
+  flowchart:
+    htmlLabels: false          # one without the other is not enough
+```
+
+Mermaid puts node labels in a `<foreignObject>` containing HTML. The sanitiser
+removes `foreignObject`, because it is a way to get arbitrary HTML into this
+page, so a diagram rendered with mermaid's defaults arrives as correctly shaped
+boxes and arrows **with no text in them**.
+
+Measured on mermaid 11.12.0, rendering the same flowchart four ways:
+
+| options | foreignObjects emitted | labels survive |
+| --- | --- | --- |
+| `flowchart.htmlLabels: false` only | 3 | no |
+| top-level `htmlLabels: false` only | 2 | yes |
+| **both** | **0** | **yes** |
+| both, plus `markdownAutoWrap: false` | 0 | yes |
+
+So set both. The portal notices this case specifically: if it had to drop a
+`foreignObject`, the panel's notice names this option rather than only counting
+what it removed, because "16 elements removed" does not lead anyone here.
+
+Other renderers may have an equivalent switch. The rule is the same: the
+diagram has to arrive as SVG, not as HTML wrapped in SVG.
+
 ## One console message you can ignore
 
 Loading a diagram that contains a `<style>` element logs a Content-Security-Policy

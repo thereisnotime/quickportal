@@ -89,7 +89,7 @@ diagram:
   title: Architecture
   renderer:
     url: https://cdn.example.com/mermaid@11.12.0/dist/mermaid.esm.min.mjs
-    options: {securityLevel: strict}
+    options: {securityLevel: strict, htmlLabels: false, flowchart: {htmlLabels: false}}
   source: |
     flowchart TD
       ingress[Ingress] --> portal[Portal]

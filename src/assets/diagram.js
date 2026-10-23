@@ -425,7 +425,7 @@ function pickRendererApi(mod) {
  *                 that carried a `style` attribute. Already applied to `el`
  *                 through the CSSOM; returned too so the panel can re-apply
  *                 them after a clone, and so a test can see them with no DOM
- *   dropped       {elements, attributes, declarations, rules, total}
+ *   dropped       {elements, attributes, declarations, rules, foreignObjects, total}
  */
 export function sanitizeSvg(text, options = {}) {
   const deps = options.deps ?? {};
@@ -518,6 +518,13 @@ function rebuild(srcEl, ctx) {
   }
 
   if (!ALLOWED_ELEMENTS.has(name)) {
+    // Counted separately, because this one drop has a specific, common and
+    // non-obvious cause. Mermaid puts node labels in a foreignObject full of
+    // HTML unless htmlLabels is false at BOTH the top level and under the
+    // diagram type, and dropping it leaves boxes with no text in them. The
+    // operator cannot be expected to derive that from "16 elements removed",
+    // so the panel names the option instead.
+    if (name === 'foreignObject') ctx.dropped.foreignObjects += 1;
     ctx.dropped.elements += countElements(srcEl);
     return null;
   }
@@ -1187,7 +1194,7 @@ function toScale(value) {
 // --- small shared helpers ---------------------------------------------------
 
 function zeroDropped() {
-  return { elements: 0, attributes: 0, declarations: 0, rules: 0, total: 0 };
+  return { elements: 0, attributes: 0, declarations: 0, rules: 0, foreignObjects: 0, total: 0 };
 }
 
 function total(dropped) {

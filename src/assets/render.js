@@ -1767,10 +1767,16 @@ function diagramDropNotice(dropped) {
       "It is displayed below without them. An SVG is executable content, so it " +
       "is rebuilt against an allowlist before it enters the page rather than " +
       "pasted in as markup.",
-    hints: [
-      "Scripts, on* handlers, foreignObject, animation elements, base elements, external references and CSS carrying url(), @import, expression() or behavior: are all removed.",
-      "If the diagram looks wrong, re-export it without those constructs rather than working around the allowlist.",
-    ],
+    hints: dropped && dropped.foreignObjects > 0
+      ? [
+          "Labels are probably missing. The renderer put them in HTML inside a foreignObject, which is removed because it is a way to get HTML into this page.",
+          "For mermaid, set htmlLabels: false at the top level AND under the diagram type (for example flowchart.htmlLabels: false). One without the other is not enough: it still emits foreignObject and the labels still vanish.",
+          "Everything else removed: scripts, on* handlers, animation elements, base elements, external references and CSS carrying url(), @import, expression() or behavior:.",
+        ]
+      : [
+          "Scripts, on* handlers, foreignObject, animation elements, base elements, external references and CSS carrying url(), @import, expression() or behavior: are all removed.",
+          "If the diagram looks wrong, re-export it without those constructs rather than working around the allowlist.",
+        ],
     dismissible: true,
   };
 }

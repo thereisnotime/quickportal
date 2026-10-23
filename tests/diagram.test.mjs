@@ -658,7 +658,7 @@ test('a legitimate diagram loses nothing at all', () => {
   assert.equal(out.error, undefined);
   assert.deepEqual(
     out.dropped,
-    { elements: 0, attributes: 0, declarations: 0, rules: 0, total: 0 },
+    { elements: 0, attributes: 0, declarations: 0, rules: 0, foreignObjects: 0, total: 0 },
     'a sanitiser that mangles good input is as useless as one that lets scripts through',
   );
 });
@@ -776,7 +776,7 @@ test('selector lists, @media and comments all scope correctly', () => {
     '.a, .b > .c, .d:is(.e, .f) { fill: red }\n' +
     '@media (min-width: 40rem) { .a { fill: blue } .g { stroke: #000 } }\n' +
     'svg .h { opacity: 0.5 }';
-  const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, total: 0 };
+  const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, foreignObjects: 0, total: 0 };
   const out = scopeCss(css, 'diagram-panel', dropped);
   assert.match(out, /#diagram-panel \.a,\n#diagram-panel \.b > \.c,\n#diagram-panel \.d:is\(\.e, \.f\)/);
   assert.match(out, /@media \(min-width: 40rem\) \{/);
@@ -798,7 +798,7 @@ test('a rule that cannot be scoped safely is dropped and counted, never emitted 
     '@namespace svg url(http://www.w3.org/2000/svg);',
   ];
   for (const css of cases) {
-    const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, total: 0 };
+    const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, foreignObjects: 0, total: 0 };
     const out = scopeCss(css, 'diagram-panel', dropped);
     assert.ok(!/^\s*[^#@]/.test(out), `${css} -> ${out}`);
     assert.ok(!/:root|html \{|body |@font-face|@keyframes|@charset|@namespace/.test(out), css);
@@ -817,7 +817,7 @@ test('an unbalanced or injected selector is refused', () => {
 
 test('without a usable scope id every rule is dropped rather than left unscoped', () => {
   for (const scopeId of ['', undefined, 'not valid', '1bad', 'a}b']) {
-    const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, total: 0 };
+    const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, foreignObjects: 0, total: 0 };
     const out = scopeCss('.a { fill: red } .b { fill: blue }', scopeId, dropped);
     assert.equal(out, '');
     assert.equal(dropped.rules, 2);
@@ -825,14 +825,14 @@ test('without a usable scope id every rule is dropped rather than left unscoped'
 });
 
 test('nothing in an unterminated stylesheet escapes', () => {
-  const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, total: 0 };
+  const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, foreignObjects: 0, total: 0 };
   const out = scopeCss('.a { fill: red', 'd', dropped);
   assert.equal(out, '');
   assert.equal(dropped.rules, 1);
 });
 
 test('a dangerous property name is refused however innocent its value', () => {
-  const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, total: 0 };
+  const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, foreignObjects: 0, total: 0 };
   assert.deepEqual(
     filterDeclarations('behavior: url(#x); -moz-binding: url(#y); fill: red', dropped),
     [['fill', 'red']],
@@ -841,7 +841,7 @@ test('a dangerous property name is refused however innocent its value', () => {
 });
 
 test('filterDeclarations keeps a fragment url and refuses the rest', () => {
-  const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, total: 0 };
+  const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, foreignObjects: 0, total: 0 };
   assert.deepEqual(
     filterDeclarations('fill: url(#g); stroke: url(https://example.org/x); ; bogus', dropped),
     [['fill', 'url(#g)']],
@@ -1355,4 +1355,28 @@ test('toPng rejects when the browser cannot do it at all', async () => {
     () => toPng(out.el, { deps: { document: null } }),
     /not available in this browser/,
   );
+});
+
+// --- Regression -------------------------------------------------------------
+//
+// foreignObject is counted on its own because it is the one drop with a
+// specific, common and non-obvious cause: mermaid puts node labels in HTML
+// inside one unless htmlLabels is false at both the top level and under the
+// diagram type, and dropping it leaves boxes with no text. The panel keys its
+// "set this option" hint on this count.
+
+test('a dropped foreignObject is counted on its own, for the mermaid hint', () => {
+  const out = sanitize(
+    svg('<g><foreignObject width="10" height="10"/><rect width="1" height="1"/></g>'),
+  );
+  assert.equal(out.dropped.foreignObjects, 1);
+  assert.ok(out.dropped.elements >= 1, 'and still counted as a dropped element');
+  assert.ok(names(out.el).includes('rect'), 'the rest of the diagram survives');
+  assert.ok(!names(out.el).includes('foreignObject'), 'and the foreignObject is gone');
+});
+
+test('a diagram with no foreignObject reports none, so the hint stays quiet', () => {
+  const out = sanitize(svg('<rect width="1" height="1"/><script>x()<\/script>'));
+  assert.equal(out.dropped.foreignObjects, 0);
+  assert.ok(out.dropped.elements >= 1, 'the script was still dropped');
 });

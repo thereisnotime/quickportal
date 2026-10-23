@@ -35,6 +35,12 @@ diagram:
     options:
       theme: dark
       securityLevel: strict
+      # htmlLabels: false is REQUIRED, at both levels, and measured rather than
+      # guessed: with only flowchart.htmlLabels, mermaid still wraps every node
+      # label in a foreignObject full of HTML, the sanitiser removes it because
+      # that is a way to get HTML into this page, and you get boxes with no
+      # text in them. With both, mermaid emits <text> and the labels survive.
+      htmlLabels: false
       flowchart:
         htmlLabels: false
 
