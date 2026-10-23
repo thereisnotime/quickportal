@@ -240,6 +240,32 @@ preferences.
 - **The renderer hook becomes the normal path and the airgap promise quietly dies** → off by default, requires a deployment-level policy change, and the documentation says plainly that it executes code the project did not ship.
 - **Operators lose in-cluster authoring of a diagram language** → the honest consequence of the measurement; the CI step is one command, and the hook exists for those who refuse it.
 
+### Two things measurement changed after the fact
+
+- **PNG export cannot use an object URL.** The policy this project ships is
+  `img-src 'self' https: data:`, with no `blob:`, so an `<img>` pointed at an
+  object URL never decodes and the export fails with nothing to show for it.
+  The raster source is a `data:` URL. Widening `img-src` to `blob:` would have
+  been the wrong fix: it changes every deployment's policy to serve one feature
+  that does not need it. Found by exporting under the real policy, not by
+  reading the code.
+- **An export has to carry the stylesheet.** The extracted CSS lives in an
+  adopted stylesheet, not in the tree, so a serialised diagram is a pile of
+  unstyled shapes: every fill, stroke and font a renderer emits is in that CSS.
+  `serializeSvg` and `toPng` embed the **unscoped** filtered form, since the
+  panel's container id does not exist in a downloaded file. Putting a `<style>`
+  into an exported file is not what the allowlist forbids: that rule governs
+  what this page parses and inlines, and this text is handed to the user. The
+  file will not round-trip through our own importer, which is the right trade
+  for something destined for a document or a slide.
+- **A `<style>` in the source logs a CSP violation that cannot be prevented.**
+  `DOMParser` evaluates it while building its document, before the sanitiser can
+  remove it. No parser MIME type avoids it (measured: `image/svg+xml`,
+  `text/xml` and `application/xml` all report, and the XML ones report more).
+  Stripping style elements from the text before parsing would mean sanitising a
+  different document from the one the parser produced, which is how sanitisers
+  get bypassed. Documented as cosmetic rather than worked around.
+
 ## Migration Plan
 
 Additive and optional. A deployment with no `diagram` section renders exactly as v0.2.0, which CI asserts the same way it does for embedding: headers unchanged, manifests differing only by what the feature adds. Ships as a minor release.

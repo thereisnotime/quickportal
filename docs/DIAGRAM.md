@@ -400,3 +400,28 @@ Every failure degrades to a notice and leaves the bookmark tree working.
 - **The panel is a view, not a route.** Its open state, pan and zoom are
   remembered per browser and survive a config edit re-rendering the page.
 - **It is a viewer.** There is no editing in the browser.
+
+## One console message you can ignore
+
+Loading a diagram that contains a `<style>` element logs a Content-Security-Policy
+error in the browser console, naming `style-src`:
+
+```
+Applying inline style violates the following Content Security Policy directive: "style-src 'self'"
+```
+
+Nothing is broken and nothing is being applied to the page. `DOMParser` evaluates
+a `<style>` element while parsing the document it builds, before the portal gets
+a chance to remove it, and the browser reports that evaluation. The portal then
+extracts the stylesheet text and applies it through the CSSOM, which is why the
+diagram is styled correctly despite the message.
+
+It cannot be suppressed from the page. Every parser MIME type produces it, and
+the alternative, stripping `<style>` from the text before parsing, would mean
+the sanitiser inspecting a different document from the one the parser produced,
+which is the classic way a sanitiser gets bypassed. A cosmetic console message
+is a much better trade.
+
+If you collect CSP reports, expect `style-src-elem` reports from this and nothing
+else from it.
+

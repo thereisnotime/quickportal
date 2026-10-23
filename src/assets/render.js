@@ -7,6 +7,8 @@
  *   applyFilter(root, query) -> matchCount
  *   renderTabStrip(strip, model, handlers)   the strip of embedded apps
  *   renderFrameNudge(frameHost, model, handlers)   the escape hatch
+ *   renderDiagramPanel(host, model, handlers)   the collapsible diagram
+ *   DIAGRAM_SCOPE_ID   the id the extracted diagram CSS is scoped to
  * Plus two helpers app.js needs: renderNotice(root, notice) to report set
  * results, and setCollapsedAll(root, collapsed) for expand-all/collapse-all.
  *
@@ -710,15 +712,30 @@ const CONFIG_HINTS = [
  */
 export function renderNotice(root, notice) {
   const parts = ensureStructure(root);
+  const node = buildNotice(notice);
+  const id = node.dataset.noticeId;
+  if (id) {
+    const previous = parts.notices.querySelector(`[data-notice-id="${CSS.escape(id)}"]`);
+    if (previous) previous.remove();
+  }
+  parts.notices.append(node);
+  return node;
+}
+
+/**
+ * The notice element itself, with no opinion about where it goes.
+ *
+ * Split out from renderNotice because the diagram panel renders its own
+ * notices into its own body: the panel is a sibling of #portal, and a diagram
+ * failure must not push the bookmark tree around or ride on the tree's live
+ * region.
+ */
+function buildNotice(notice) {
   const { kind = "info", title, message, hints, links, issues, dismissible, id, actions } =
     notice || {};
 
   const node = make("div", `notice notice-${kind}`);
-  if (id) {
-    node.dataset.noticeId = id;
-    const previous = parts.notices.querySelector(`[data-notice-id="${CSS.escape(id)}"]`);
-    if (previous) previous.remove();
-  }
+  if (id) node.dataset.noticeId = id;
 
   const head = make("div", "notice-head");
   head.append(make("h2", "notice-title", title || ""));
@@ -761,7 +778,6 @@ export function renderNotice(root, notice) {
     node.append(row);
   }
 
-  parts.notices.append(node);
   return node;
 }
 
@@ -1451,4 +1467,758 @@ function ensureNudgeBar(frameHost) {
 
   frameHost.__quickportalNudge = bar;
   return bar;
+}
+
+/* -------------------------------------------------------------------------
+ * 14. The diagram panel
+ *
+ * #diagram-panel is a sibling of <main>, outside everything that re-renders,
+ * for the same reason the frame host is: rebuilding an inlined SVG on every
+ * config poll would discard the pan and zoom position and re-run the renderer.
+ * Nothing here reparents the panel, and nothing here parses or sanitises a
+ * diagram: the model arrives carrying an already-sanitised element, the CSS
+ * the sanitiser extracted having already been adopted through the CSSOM by
+ * app.js. This module never creates a <style> element, because the page is
+ * served under `style-src 'self'`.
+ *
+ * Pan and zoom are gestures, so the measurement and the arithmetic are here,
+ * but the resulting state is not: every change is reported through
+ * handlers.onZoom and arrives back in the next model. That is what lets a
+ * config change re-render the panel with the position intact.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The id of the element the diagram is mounted in, which is also the scope the
+ * sanitiser is asked to qualify the extracted CSS with. Exported so app.js
+ * passes the same value to sanitizeSvg rather than both sides guessing.
+ */
+export const DIAGRAM_SCOPE_ID = "qp-diagram-scope";
+
+const DIAGRAM_BODY_ID = "qp-diagram-body";
+const DIAGRAM_HINT_ID = "qp-diagram-hint";
+
+const ZOOM_MIN = 0.1;
+const ZOOM_MAX = 8;
+const ZOOM_STEP = 1.25;
+/** Viewport pixels moved by one arrow key; Shift multiplies it. */
+const PAN_STEP = 48;
+
+/** Handlers per panel element, replaced on every render. */
+const diagramHandlers = new WeakMap();
+const boundPanels = new WeakSet();
+/** The untransformed size of a mounted diagram, measured once per element. */
+const naturalSizes = new WeakMap();
+
+const DIAGRAM_HINT =
+  "Drag to pan. Hold Ctrl and scroll to zoom; scrolling on its own moves the page. " +
+  "With the diagram focused, the arrow keys pan, + and - zoom, and 0 fits it to the view.";
+
+/**
+ * Render the collapsible diagram panel.
+ *
+ * @param {Element} host  #diagram-panel
+ * @param {object} model
+ *   {configured, title, open, state, el, dropped, droppedDismissed, error,
+ *    zoom, busy, renderer, fallback} - `state` is "idle" | "loading" | "ready" |
+ *   "error", `el` is the sanitised SVG element, `zoom` is {scale, x, y} or
+ *   null to fit it on first sight, `renderer` only changes the wording while
+ *   loading, and `fallback` is set when the committed SVG is being shown
+ *   because the renderer module could not be loaded
+ * @param {object} handlers
+ *   onToggle(open), onZoom({scale, x, y}), onExportSvg(), onExportPng(),
+ *   onRetry(), onDismissDrop()
+ */
+export function renderDiagramPanel(host, model, handlers) {
+  if (!host) return;
+  diagramHandlers.set(host, handlers || {});
+  const m = model || {};
+
+  // No diagram section in the config means no panel at all: an empty frame
+  // explaining that nothing is configured is chrome nobody asked for.
+  if (!m.configured) {
+    setHidden(host, true);
+    return;
+  }
+
+  const parts = ensureDiagramPanel(host);
+  setHidden(host, false);
+
+  setText(parts.name, m.title || "Diagram");
+  const open = Boolean(m.open);
+  setAttr(parts.toggle, "aria-expanded", open ? "true" : "false");
+  setHidden(parts.body, !open);
+  // Everything below needs layout to measure against, and a hidden element has
+  // none, so a closed panel stops here. Opening it renders again.
+  if (!open) return;
+
+  updateDiagramNotices(parts, m);
+
+  const ready = m.state === "ready" && m.el;
+  setText(parts.status, diagramStatusLine(m));
+  setHidden(parts.status, m.state !== "loading");
+  setHidden(parts.toolbar, !ready);
+  setHidden(parts.viewport, !ready);
+  setHidden(parts.hint, !ready);
+
+  if (!ready) {
+    if (parts.canvas.firstChild) parts.canvas.replaceChildren();
+    return;
+  }
+
+  if (parts.canvas.firstElementChild !== m.el) {
+    parts.canvas.replaceChildren(m.el);
+    naturalSizes.delete(m.el);
+  }
+
+  const zoom = normalizeZoom(m.zoom);
+  // A null zoom means "this is the first sight of this diagram": fit it, and
+  // report the result so the state lives where a re-render can hand it back.
+  if (!zoom) fitDiagram(parts, diagramHandlers.get(host) || {});
+  else applyZoom(parts, zoom);
+
+  updateExportState(parts, m.busy);
+}
+
+/* ---- structure, built once ---------------------------------------------- */
+
+function ensureDiagramPanel(host) {
+  let parts = host.__quickportalDiagram;
+  if (parts && parts.body.isConnected) return parts;
+
+  // The section carries aria-labelledby="diagram-title" from index.html, so
+  // that id belongs to the heading and nothing else may take it.
+  const head = make("h2", "diagram-head");
+  head.id = "diagram-title";
+  const toggle = make("button", "diagram-toggle");
+  toggle.type = "button";
+  setAttr(toggle, "aria-controls", DIAGRAM_BODY_ID);
+  const chev = make("span", "chev", "▼");
+  setAttr(chev, "aria-hidden", "true");
+  const name = make("span", "diagram-name");
+  toggle.append(chev, name);
+  head.append(toggle);
+
+  const body = make("div", "diagram-body");
+  body.id = DIAGRAM_BODY_ID;
+  body.setAttribute("role", "region");
+  setAttr(body, "aria-labelledby", head.id);
+
+  const notices = make("div", "notices diagram-notices");
+  notices.setAttribute("aria-live", "polite");
+
+  const status = make("p", "diagram-status");
+  status.setAttribute("role", "status");
+  status.hidden = true;
+
+  const toolbar = make("div", "diagram-toolbar");
+  const zoomLevel = make("p", "diagram-zoom");
+  // A live region: the zoom level changes from the wheel and the keyboard as
+  // well as from these buttons, and it has to be conveyed either way.
+  zoomLevel.setAttribute("role", "status");
+  toolbar.append(
+    diagramButton("zoom-out", "−", "Zoom out"),
+    zoomLevel,
+    diagramButton("zoom-in", "+", "Zoom in"),
+    diagramButton("fit", "⛶", "Fit"),
+    diagramButton("export-svg", "⤓", "Export SVG"),
+    diagramButton("export-png", "⤓", "Export PNG"),
+  );
+  toolbar.hidden = true;
+
+  const viewport = make("div", "diagram-viewport");
+  viewport.tabIndex = 0;
+  viewport.setAttribute("role", "group");
+  setAttr(viewport, "aria-describedby", DIAGRAM_HINT_ID);
+  viewport.hidden = true;
+  const canvas = make("div", "diagram-canvas");
+  canvas.id = DIAGRAM_SCOPE_ID;
+  viewport.append(canvas);
+
+  const hint = make("p", "diagram-hint", DIAGRAM_HINT);
+  hint.id = DIAGRAM_HINT_ID;
+  hint.hidden = true;
+
+  body.append(notices, status, toolbar, viewport, hint);
+  host.replaceChildren(head, body);
+
+  parts = { host, head, toggle, name, body, notices, status, toolbar, zoomLevel, viewport, canvas, hint };
+  host.__quickportalDiagram = parts;
+  attachDiagramListeners(parts);
+  return parts;
+}
+
+function diagramButton(action, glyph, label) {
+  const button = make("button", "btn btn-quiet");
+  button.type = "button";
+  button.dataset.diagramAction = action;
+  const icon = make("span", null, glyph);
+  setAttr(icon, "aria-hidden", "true");
+  // The label is the first thing a narrow toolbar drops, so the aria-label
+  // carries the same words whether or not the text is on screen.
+  button.append(icon, make("span", "btn-label", label));
+  setAttr(button, "aria-label", label);
+  return button;
+}
+
+/* ---- notices ------------------------------------------------------------ */
+
+/**
+ * The panel's own notices. Keyed by a signature so that a drag, which
+ * re-renders on every pointer move, does not rebuild them sixty times a
+ * second and restart their live region.
+ */
+function updateDiagramNotices(parts, m) {
+  const dropped = m.droppedDismissed ? null : normalizeDropCounts(m.dropped);
+  const error = m.error || null;
+  const fallback = m.fallback || null;
+  const signature = JSON.stringify([
+    error && [error.kind, error.path, error.bytes, error.maxBytes, error.url, error.detail],
+    dropped && [dropped.elements, dropped.attributes, dropped.declarations, dropped.rules],
+    fallback && [fallback.reason, fallback.url, fallback.path],
+  ]);
+  if (parts.notices.dataset.signature === signature) return;
+  parts.notices.dataset.signature = signature;
+
+  parts.notices.replaceChildren();
+  if (error) parts.notices.append(buildNotice(diagramErrorNotice(error)));
+  if (fallback) parts.notices.append(buildNotice(diagramFallbackNotice(fallback)));
+  if (dropped) parts.notices.append(buildNotice(diagramDropNotice(dropped)));
+}
+
+/**
+ * The renderer could not be loaded and a committed SVG was shown instead.
+ *
+ * This is the feature's only graceful degradation, so it says what happened
+ * rather than hiding it: the picture on screen was rendered at some earlier
+ * point and committed, and it is not necessarily the config's current source.
+ */
+function diagramFallbackNotice(fallback) {
+  const blocked = fallback.reason === "blocked";
+  return {
+    kind: "info",
+    id: "diagram-fallback",
+    title: blocked
+      ? "Showing the committed diagram: this deployment's policy blocked the renderer"
+      : "Showing the committed diagram: the renderer could not be reached",
+    message:
+      `The diagram below is the SVG committed at ${fallback.path || "diagram.src"}, ` +
+      `rendered earlier rather than now. ` +
+      (blocked
+        ? `QuickPortal's own Content-Security-Policy refused to import ` +
+          `${fallback.url || "the renderer"}, so the source in the config was not re-rendered.`
+        : `${fallback.url || "The renderer"} could not be loaded, so the source in the ` +
+          `config was not re-rendered.`) +
+      " If the two have drifted apart, this is the older of them.",
+    hints: blocked
+      ? [
+          "Widen script-src in the server config ConfigMap to list the renderer's origin; it ships as script-src 'self'.",
+          "Re-rendering to SVG in CI and committing the result keeps the two in step with no policy change at all.",
+        ]
+      : [
+          "On a machine with no route to that origin this is what you get, which is the point of committing the SVG as well.",
+          "Re-rendering to SVG in CI and committing the result keeps the two in step with no origin to reach.",
+        ],
+    dismissible: true,
+  };
+}
+
+function normalizeDropCounts(dropped) {
+  if (!dropped) return null;
+  const elements = countOf(dropped.elements);
+  const attributes = countOf(dropped.attributes);
+  const declarations = countOf(dropped.declarations);
+  const rules = countOf(dropped.rules);
+  if (!(elements + attributes + declarations + rules)) return null;
+  return { elements, attributes, declarations, rules };
+}
+
+function countOf(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+}
+
+/**
+ * "3 elements, 5 attributes and 2 style declarations", skipping the zeroes.
+ */
+function dropSummary(dropped) {
+  const parts = [];
+  if (dropped.elements) parts.push(plural(dropped.elements, "element"));
+  if (dropped.attributes) parts.push(plural(dropped.attributes, "attribute"));
+  if (dropped.declarations) parts.push(plural(dropped.declarations, "style declaration"));
+  if (dropped.rules) parts.push(plural(dropped.rules, "style rule"));
+  if (parts.length < 2) return parts.join("");
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+function plural(count, noun) {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * Silently altering someone's diagram is worse than telling them, so this is
+ * a notice rather than a console line, and the diagram still renders below it.
+ */
+function diagramDropNotice(dropped) {
+  return {
+    kind: "warn",
+    id: "diagram-dropped",
+    title: `The diagram was altered: ${dropSummary(dropped)} removed`,
+    message:
+      "It is displayed below without them. An SVG is executable content, so it " +
+      "is rebuilt against an allowlist before it enters the page rather than " +
+      "pasted in as markup.",
+    hints: [
+      "Scripts, on* handlers, foreignObject, animation elements, base elements, external references and CSS carrying url(), @import, expression() or behavior: are all removed.",
+      "If the diagram looks wrong, re-export it without those constructs rather than working around the allowlist.",
+    ],
+    dismissible: true,
+  };
+}
+
+/**
+ * Every failure is a notice, and every notice names the specific thing to
+ * look at: the path that was tried, the two sizes, the parse error, the origin
+ * the diagram needs, or our own policy.
+ */
+function diagramErrorNotice(error) {
+  const path = error.path || "the configured path";
+  const detail = error.detail ? ` ${error.detail}` : "";
+  const retry = { action: "retry", label: "Try again", primary: true };
+  const unaffected = "The bookmarks are unaffected.";
+
+  switch (error.kind) {
+    case "missing":
+      return {
+        kind: "error",
+        id: "diagram-error",
+        title: "The diagram could not be fetched",
+        message: `Nothing usable came back from ${path}.${detail} ${unaffected}`,
+        hints: [
+          "The diagram is a key in the same ConfigMap as config.yaml, and diagram.src is the path it is served at.",
+          "A ConfigMap mounted with subPath is never updated by kubelet, and an immutable ConfigMap never changes at all.",
+        ],
+        actions: [retry],
+      };
+
+    case "too-large":
+      return {
+        kind: "error",
+        id: "diagram-error",
+        title: "The diagram is over the size limit",
+        message:
+          `${path} is ${formatBytes(error.bytes)} and the limit is ` +
+          `${formatBytes(error.maxBytes)}, so it was not inlined. ${unaffected}`,
+        hints: [
+          "Raise diagram.maxBytes if the file is genuinely that big and the page can afford it.",
+          "The diagram shares the 1MiB ConfigMap with the config, and inlining a megabyte of SVG is slow on a phone long before the cluster refuses it.",
+        ],
+        actions: [retry],
+      };
+
+    case "parse":
+      return {
+        kind: "error",
+        id: "diagram-error",
+        title: "The diagram is not valid SVG",
+        message: `${path} could not be parsed as SVG.${detail} ${unaffected}`,
+        hints: [
+          "It is parsed as image/svg+xml, which is XML: an unclosed tag or a stray & is fatal where HTML would have recovered.",
+          "Open the file in a browser on its own; the same parser reports the same error.",
+        ],
+        actions: [retry],
+      };
+
+    case "renderer-unreachable":
+      return {
+        kind: "error",
+        id: "diagram-error",
+        title: `The diagram needs ${error.origin || "the renderer's origin"}`,
+        message:
+          `The diagram source in the config is drawn by a renderer module this ` +
+          `project does not ship, imported from ${error.url || "the configured URL"} ` +
+          `when the panel is opened. That origin could not be reached.${detail} ${unaffected}`,
+        hints: [
+          "On a machine with no route to that origin, the diagram cannot be drawn at all; this is the cost of the renderer hook, stated where it bites.",
+          "Rendering the diagram to SVG once and setting diagram.src instead needs no origin and no policy change.",
+          "Self-hosting the renderer beside the portal is better than a public CDN for exactly this reason.",
+        ],
+        actions: [retry],
+      };
+
+    case "renderer-blocked":
+      return {
+        kind: "error",
+        id: "diagram-error",
+        title: "This deployment's own policy is blocking the diagram renderer",
+        message:
+          `QuickPortal's Content-Security-Policy refused to import ` +
+          `${error.url || "the renderer"}. This is the portal's own header, not the ` +
+          `renderer's: naming a renderer in the config is only half of it. ${unaffected}`,
+        hints: [
+          "Widen script-src in the server config ConfigMap to list the renderer's origin; it ships as script-src 'self'.",
+          "This is the same half-configured state as frame-src for embedding, and it takes the same deployment-level change.",
+          "Until the policy allows it, render the diagram to SVG and set diagram.src, which needs no policy change at all.",
+        ],
+      };
+
+    case "render-failed":
+      return {
+        kind: "error",
+        id: "diagram-error",
+        title: "The renderer could not draw the diagram",
+        message:
+          `The renderer loaded but did not return an SVG for the source in the ` +
+          `config.${detail} ${unaffected}`,
+        hints: [
+          "The source is passed through verbatim, so a syntax error in it is reported by the renderer, not by the portal.",
+          "A renderer told to trust its input will emit constructs the sanitiser then removes; securityLevel: strict is the setting worth keeping.",
+        ],
+        actions: [retry],
+      };
+
+    default:
+      return {
+        kind: "error",
+        id: "diagram-error",
+        title: "The diagram could not be shown",
+        message: `${detail.trim() || "No diagram source is configured."} ${unaffected}`,
+        actions: [retry],
+      };
+  }
+}
+
+/** KiB for anything over a kilobyte, with the exact byte count kept. */
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return "an unknown size";
+  if (value < 1024) return `${value} bytes`;
+  const kib = value / 1024;
+  const scaled = kib < 1024 ? `${kib.toFixed(1)} KiB` : `${(kib / 1024).toFixed(2)} MiB`;
+  return `${scaled} (${value.toLocaleString("en")} bytes)`;
+}
+
+function diagramStatusLine(m) {
+  if (m.state === "loading") {
+    return m.renderer
+      ? "Rendering the diagram…"
+      : "Loading the diagram…";
+  }
+  return "";
+}
+
+/* ---- zoom and pan ------------------------------------------------------- */
+
+function normalizeZoom(zoom) {
+  if (!zoom) return null;
+  const scale = Number(zoom.scale);
+  const x = Number(zoom.x);
+  const y = Number(zoom.y);
+  if (!Number.isFinite(scale) || scale <= 0) return null;
+  return {
+    scale: clampScale(scale),
+    x: Number.isFinite(x) ? x : 0,
+    y: Number.isFinite(y) ? y : 0,
+  };
+}
+
+function clampScale(scale) {
+  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, scale));
+}
+
+/**
+ * Write the transform through the CSSOM and keep the zoom readout in step.
+ * This is element.style, not a style attribute in the markup, which is what
+ * keeps the page on `style-src 'self'`.
+ */
+function applyZoom(parts, zoom) {
+  parts.canvas.style.setProperty(
+    "transform",
+    `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`,
+  );
+  const percent = `${Math.round(zoom.scale * 100)}%`;
+  setText(parts.zoomLevel, `Zoom ${percent}`);
+  setAttr(
+    parts.viewport,
+    "aria-label",
+    `Diagram, zoomed to ${percent}. Pan and zoom from the keyboard.`,
+  );
+  const out = parts.toolbar.querySelector('[data-diagram-action="zoom-out"]');
+  const into = parts.toolbar.querySelector('[data-diagram-action="zoom-in"]');
+  setDisabled(out, zoom.scale <= ZOOM_MIN + 1e-9);
+  setDisabled(into, zoom.scale >= ZOOM_MAX - 1e-9);
+}
+
+function setDisabled(node, disabled) {
+  if (node && node.disabled !== disabled) node.disabled = disabled;
+}
+
+function updateExportState(parts, busy) {
+  const svg = parts.toolbar.querySelector('[data-diagram-action="export-svg"]');
+  const png = parts.toolbar.querySelector('[data-diagram-action="export-png"]');
+  setDisabled(svg, busy === "svg");
+  setDisabled(png, busy === "png");
+  setAttr(parts.toolbar, "aria-busy", busy ? "true" : null);
+}
+
+function currentZoom(parts) {
+  const match = /translate\(([-\d.]+)px,\s*([-\d.]+)px\)\s*scale\(([-\d.]+)\)/.exec(
+    parts.canvas.style.transform || "",
+  );
+  if (!match) return { scale: 1, x: 0, y: 0 };
+  return { x: Number(match[1]), y: Number(match[2]), scale: clampScale(Number(match[3])) };
+}
+
+/**
+ * The diagram's size with no transform applied, measured once per element.
+ *
+ * Measuring the transformed box and dividing is tempting and wrong: the scale
+ * is the thing being solved for. So the transform is removed for the length of
+ * one read. It happens on a fit, not on a drag.
+ */
+function naturalSize(parts, el) {
+  const cached = naturalSizes.get(el);
+  if (cached) return cached;
+  const previous = parts.canvas.style.transform;
+  parts.canvas.style.setProperty("transform", "none");
+  const rect = el.getBoundingClientRect();
+  if (previous) parts.canvas.style.setProperty("transform", previous);
+  else parts.canvas.style.removeProperty("transform");
+  const size = { width: rect.width || 0, height: rect.height || 0 };
+  if (size.width > 0 && size.height > 0) naturalSizes.set(el, size);
+  return size;
+}
+
+/**
+ * Fit the whole diagram in the viewport and centre it. Reported through
+ * onZoom like any other change, so the next model carries it.
+ */
+function fitDiagram(parts, handlers) {
+  const el = parts.canvas.firstElementChild;
+  if (!el) return;
+  const vw = parts.viewport.clientWidth;
+  const vh = parts.viewport.clientHeight;
+  const size = naturalSize(parts, el);
+  if (!(vw > 0 && vh > 0 && size.width > 0 && size.height > 0)) {
+    commitZoom(parts, { scale: 1, x: 0, y: 0 }, handlers);
+    return;
+  }
+  // A little short of exact, so the outermost stroke is not clipped by a
+  // rounding error.
+  const scale = clampScale(Math.min(vw / size.width, vh / size.height) * 0.96);
+  commitZoom(
+    parts,
+    {
+      scale,
+      x: (vw - size.width * scale) / 2,
+      y: (vh - size.height * scale) / 2,
+    },
+    handlers,
+  );
+}
+
+/**
+ * Zoom by a factor about a fixed point in viewport coordinates, so the thing
+ * under the pointer (or the centre of the view, for a button) stays put.
+ */
+function zoomBy(parts, factor, originX, originY, handlers) {
+  const zoom = currentZoom(parts);
+  const next = clampScale(zoom.scale * factor);
+  if (next === zoom.scale) return;
+  const k = next / zoom.scale;
+  commitZoom(
+    parts,
+    {
+      scale: next,
+      x: originX - k * (originX - zoom.x),
+      y: originY - k * (originY - zoom.y),
+    },
+    handlers,
+  );
+}
+
+function panBy(parts, dx, dy, handlers) {
+  const zoom = currentZoom(parts);
+  commitZoom(parts, { scale: zoom.scale, x: zoom.x + dx, y: zoom.y + dy }, handlers);
+}
+
+/**
+ * Apply a new position immediately and report it.
+ *
+ * Applied here as well as reported because a drag has to track the pointer
+ * whether or not the owner re-renders, and because applying the same numbers
+ * twice is idempotent. The report is what survives a config change.
+ */
+function commitZoom(parts, zoom, handlers) {
+  const next = normalizeZoom(zoom) || { scale: 1, x: 0, y: 0 };
+  applyZoom(parts, next);
+  if (handlers && typeof handlers.onZoom === "function") handlers.onZoom(next);
+}
+
+function viewportCentre(parts) {
+  return { x: parts.viewport.clientWidth / 2, y: parts.viewport.clientHeight / 2 };
+}
+
+/* ---- events ------------------------------------------------------------- */
+
+function attachDiagramListeners(parts) {
+  const host = parts.host;
+  if (boundPanels.has(host)) return;
+  boundPanels.add(host);
+
+  host.addEventListener("click", (event) => {
+    const handlers = diagramHandlers.get(host) || {};
+
+    const toggle = event.target.closest(".diagram-toggle");
+    if (toggle) {
+      const open = toggle.getAttribute("aria-expanded") === "true";
+      if (typeof handlers.onToggle === "function") handlers.onToggle(!open);
+      return;
+    }
+
+    const dismiss = event.target.closest('[data-action="dismiss-notice"]');
+    if (dismiss) {
+      // The notice is about to vanish with the button that was activated, so
+      // focus is moved on purpose rather than dropped on the document.
+      const landing = parts.toolbar.querySelector('[data-diagram-action="fit"]') || parts.toggle;
+      call(handlers.onDismissDrop);
+      if (landing && landing.isConnected) landing.focus({ preventScroll: true });
+      return;
+    }
+
+    if (event.target.closest('[data-action="retry"]')) {
+      call(handlers.onRetry);
+      return;
+    }
+
+    const button = event.target.closest("[data-diagram-action]");
+    if (!button) return;
+    const centre = viewportCentre(parts);
+    switch (button.dataset.diagramAction) {
+      case "zoom-in":
+        zoomBy(parts, ZOOM_STEP, centre.x, centre.y, handlers);
+        break;
+      case "zoom-out":
+        zoomBy(parts, 1 / ZOOM_STEP, centre.x, centre.y, handlers);
+        break;
+      case "fit":
+        fitDiagram(parts, handlers);
+        break;
+      case "export-svg":
+        call(handlers.onExportSvg);
+        break;
+      case "export-png":
+        call(handlers.onExportPng);
+        break;
+      default:
+        break;
+    }
+  });
+
+  parts.viewport.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+    const handlers = diagramHandlers.get(host) || {};
+    const step = event.shiftKey ? PAN_STEP * 4 : PAN_STEP;
+    const centre = viewportCentre(parts);
+
+    switch (event.key) {
+      // Panning moves the diagram the way the key points, so ArrowRight
+      // reveals what is off the right edge.
+      case "ArrowLeft":
+        event.preventDefault();
+        panBy(parts, step, 0, handlers);
+        break;
+      case "ArrowRight":
+        event.preventDefault();
+        panBy(parts, -step, 0, handlers);
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        panBy(parts, 0, step, handlers);
+        break;
+      case "ArrowDown":
+        event.preventDefault();
+        panBy(parts, 0, -step, handlers);
+        break;
+      case "+":
+      case "=":
+      case "Add":
+        event.preventDefault();
+        zoomBy(parts, ZOOM_STEP, centre.x, centre.y, handlers);
+        break;
+      case "-":
+      case "_":
+      case "Subtract":
+        event.preventDefault();
+        zoomBy(parts, 1 / ZOOM_STEP, centre.x, centre.y, handlers);
+        break;
+      case "0":
+      case "Home":
+        event.preventDefault();
+        fitDiagram(parts, handlers);
+        break;
+      default:
+        break;
+    }
+  });
+
+  // Not passive, because a Ctrl-wheel is preventDefault'ed to stop the browser
+  // zooming the whole page instead. A plain wheel is deliberately left alone:
+  // a panel that swallowed the scroll wheel would trap someone scrolling past
+  // it on the way to the bookmarks.
+  parts.viewport.addEventListener(
+    "wheel",
+    (event) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      const handlers = diagramHandlers.get(host) || {};
+      const rect = parts.viewport.getBoundingClientRect();
+      const factor = Math.exp(-event.deltaY * 0.0025);
+      zoomBy(parts, factor, event.clientX - rect.left, event.clientY - rect.top, handlers);
+    },
+    { passive: false },
+  );
+
+  // Mouse and pen only. A touch drag is left to the browser so that the page
+  // still scrolls under a finger; touch users zoom with the buttons and with
+  // their own pinch gesture on the page.
+  let drag = null;
+
+  parts.viewport.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    if (event.pointerType !== "mouse" && event.pointerType !== "pen") return;
+    if (event.target.closest("button, a")) return;
+    const zoom = currentZoom(parts);
+    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, zoom };
+    parts.viewport.dataset.dragging = "true";
+    try {
+      parts.viewport.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture is a convenience; the move listener still works without it.
+    }
+  });
+
+  parts.viewport.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    event.preventDefault();
+    const handlers = diagramHandlers.get(host) || {};
+    commitZoom(
+      parts,
+      {
+        scale: drag.zoom.scale,
+        x: drag.zoom.x + (event.clientX - drag.x),
+        y: drag.zoom.y + (event.clientY - drag.y),
+      },
+      handlers,
+    );
+  });
+
+  function endDrag(event) {
+    if (!drag || (event && event.pointerId !== drag.id)) return;
+    drag = null;
+    delete parts.viewport.dataset.dragging;
+  }
+
+  parts.viewport.addEventListener("pointerup", endDrag);
+  parts.viewport.addEventListener("pointercancel", endDrag);
+  parts.viewport.addEventListener("lostpointercapture", endDrag);
 }

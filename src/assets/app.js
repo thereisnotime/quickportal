@@ -18,6 +18,8 @@ import {
   setQuery,
   getOpenTabs,
   setOpenTabs,
+  getDiagramOpen,
+  setDiagramOpen,
 } from "./state.js";
 import { openSet } from "./sets.js";
 import { watchConfig } from "./reload.js";
@@ -30,7 +32,18 @@ import {
   setCollapsedAll,
   renderTabStrip,
   renderFrameNudge,
+  renderDiagramPanel,
+  DIAGRAM_SCOPE_ID,
 } from "./render.js";
+import {
+  fetchDiagram,
+  renderSource,
+  sanitizeSvg,
+  applyScopedCss,
+  serializeSvg,
+  toPng,
+  PNG_DEFAULT_SCALE,
+} from "./diagram.js";
 
 const CONFIG_URL = "./config/config.yaml";
 const THEMES = ["auto", "light", "dark"];
@@ -51,9 +64,11 @@ const dom = {
   shortcuts: document.getElementById("shortcuts"),
   live: document.getElementById("live"),
   status: document.getElementById("status"),
-  // Siblings of <main>, never descendants: moving an iframe reloads it.
+  // Siblings of <main>, never descendants: moving an iframe reloads it, and
+  // rebuilding an inlined SVG throws away the pan and zoom position.
   tabStrip: document.getElementById("tab-strip"),
   frameHost: document.getElementById("frame-host"),
+  diagramPanel: document.getElementById("diagram-panel"),
 };
 
 /** Last config that normalised cleanly. Kept so a broken live reload can keep
@@ -218,6 +233,7 @@ function applyConfigText(text) {
   document.title = config.title ? `${config.title} - QuickPortal` : "QuickPortal";
   applyConfigTheme(config.theme);
   syncFrames();
+  syncDiagram();
   startWatching();
   setStatus();
 }
@@ -744,6 +760,602 @@ function extendShortcuts() {
 }
 
 /* -------------------------------------------------------------------------
+ * The diagram panel
+ *
+ * #diagram-panel is a sibling of <main>, so a config poll re-renders the
+ * bookmark tree without touching the inlined SVG. Everything cached about the
+ * diagram lives here, keyed on a fingerprint of `config.diagram`: a config
+ * change re-renders the panel from the cache and only a change to the diagram's
+ * own configuration throws it away and fetches again.
+ *
+ * Nothing here parses, sanitises or serialises anything itself. diagram.js owns
+ * all of that, including the constructed stylesheet that keeps the renderer's
+ * CSS working under `style-src 'self'`; this module decides when it happens and
+ * turns its outcomes into the panel's model.
+ * ---------------------------------------------------------------------- */
+
+/** Directives that can refuse a dynamic import of the renderer module. */
+const RENDERER_DIRECTIVES = ["script-src", "script-src-elem", "default-src"];
+
+const diagram = {
+  /** Whether the panel is open. Persisted, so it survives a reload. */
+  open: false,
+  /** JSON of the diagram's own configuration; a change invalidates the cache. */
+  fingerprint: null,
+  /** Bumped whenever the cache is dropped, so an in-flight load can tell that
+   *  it is no longer the load anyone is waiting for. */
+  generation: 0,
+  state: "idle",
+  loading: false,
+  /** Whether this load goes through a renderer, for the loading wording. */
+  renderer: false,
+  el: null,
+  dropped: null,
+  droppedDismissed: false,
+  error: null,
+  /** Set when the committed SVG is shown because the renderer never loaded. */
+  fallback: null,
+  /** {scale, x, y}, or null to be fitted on first sight. Kept here rather than
+   *  in the DOM so that a re-render hands it straight back. */
+  zoom: null,
+  busy: null,
+  /** The stop() returned by applyScopedCss for the stylesheet in use. */
+  stopCss: null,
+};
+
+const diagramHandlers = {
+  onToggle: toggleDiagram,
+  onZoom: (zoom) => {
+    diagram.zoom = zoom;
+    renderDiagram();
+  },
+  onExportSvg: exportDiagramSvg,
+  onExportPng: exportDiagramPng,
+  onRetry: retryDiagram,
+  onDismissDrop: () => {
+    diagram.droppedDismissed = true;
+    renderDiagram();
+  },
+};
+
+function diagramConfig() {
+  return (config && config.diagram) || null;
+}
+
+/**
+ * The diagram's own configuration, as a string, so a config change that did
+ * not touch it is not a reason to fetch anything again. Written out field by
+ * field rather than stringifying the section, so an unrelated key appearing
+ * there later does not quietly invalidate every cache.
+ */
+function diagramFingerprint(d) {
+  if (!d) return null;
+  const renderer = d.renderer || null;
+  return JSON.stringify([
+    d.src ?? null,
+    d.maxBytes ?? null,
+    d.source ?? null,
+    d.mode ?? null,
+    renderer ? [renderer.url ?? null, renderer.options ?? null] : null,
+  ]);
+}
+
+/**
+ * Reconcile the panel with the config that has just been applied.
+ *
+ * The open state is deliberately untouched: a config change leaves the panel
+ * as the user left it, and so is the cached diagram unless the diagram's own
+ * configuration changed.
+ */
+function syncDiagram() {
+  if (!dom.diagramPanel) return;
+  const d = diagramConfig();
+  const fingerprint = diagramFingerprint(d);
+
+  if (fingerprint !== diagram.fingerprint) {
+    diagram.fingerprint = fingerprint;
+    resetDiagram();
+  }
+
+  if (d && diagram.open && diagram.state === "idle" && !diagram.loading) loadDiagram();
+  else renderDiagram();
+
+  if (d) extendDiagramShortcuts();
+}
+
+/** Drop everything cached about the diagram, but not the open state. */
+function resetDiagram() {
+  diagram.generation += 1;
+  diagram.loading = false;
+  diagram.state = "idle";
+  diagram.renderer = false;
+  diagram.el = null;
+  diagram.cssExport = "";
+  diagram.dropped = null;
+  diagram.droppedDismissed = false;
+  diagram.error = null;
+  diagram.fallback = null;
+  // A different diagram is a different picture, so the old position means
+  // nothing and it is fitted again.
+  diagram.zoom = null;
+  diagram.busy = null;
+  stopDiagramCss();
+}
+
+function stopDiagramCss() {
+  if (typeof diagram.stopCss === "function") safely(() => diagram.stopCss(), null);
+  diagram.stopCss = null;
+}
+
+function renderDiagram() {
+  if (!dom.diagramPanel) return;
+  const d = diagramConfig();
+  renderDiagramPanel(
+    dom.diagramPanel,
+    {
+      configured: Boolean(d),
+      title: (d && d.title) || "Diagram",
+      open: diagram.open,
+      state: diagram.state,
+      renderer: diagram.renderer,
+      el: diagram.el,
+      dropped: diagram.dropped,
+      droppedDismissed: diagram.droppedDismissed,
+      error: diagram.error,
+      fallback: diagram.fallback,
+      zoom: diagram.zoom,
+      busy: diagram.busy,
+    },
+    diagramHandlers,
+  );
+}
+
+/** The lazy part: nothing is fetched or rendered until the first open. */
+function toggleDiagram(open) {
+  diagram.open = Boolean(open);
+  safely(() => setDiagramOpen(diagram.open), null);
+  if (diagram.open && diagramConfig() && diagram.state === "idle" && !diagram.loading) {
+    loadDiagram();
+  } else {
+    renderDiagram();
+  }
+  announce(
+    diagram.open
+      ? "Diagram panel opened."
+      : "Diagram panel closed. The diagram stays loaded.",
+  );
+}
+
+function retryDiagram() {
+  if (!diagramConfig()) return;
+  resetDiagram();
+  announce("Loading the diagram again.");
+  loadDiagram();
+}
+
+/**
+ * Load, render or fetch, sanitise, mount.
+ *
+ * Every step reports a failure rather than throwing, and `attempt` covers the
+ * case where one throws anyway: a diagram is decoration for most of what this
+ * page is for, so nothing it does may reach the bookmarks.
+ */
+async function loadDiagram() {
+  const d = diagramConfig();
+  if (!d || diagram.loading) return;
+
+  const generation = diagram.generation;
+  diagram.loading = true;
+  diagram.state = "loading";
+  diagram.error = null;
+  diagram.fallback = null;
+  diagram.renderer = d.mode === "renderer";
+  renderDiagram();
+
+  try {
+    const source = await obtainDiagramText(d);
+    if (generation !== diagram.generation) return; // the config moved on
+
+    if (!source.text) {
+      setDiagramError(source.error || { kind: "other" });
+      return;
+    }
+
+    const result = await attempt(() => sanitizeSvg(source.text, { scopeId: DIAGRAM_SCOPE_ID }));
+    if (generation !== diagram.generation) return;
+
+    if (!result || result.error || !result.el) {
+      // sanitizeSvg answers `parse` for a malformed document and `unsupported`
+      // where the browser has no DOMParser; both leave nothing to display, and
+      // the detail distinguishes them.
+      setDiagramError({
+        kind: "parse",
+        path: source.fallback ? d.src : diagramOrigin(d),
+        detail: errorDetail(result && result.error),
+      });
+      return;
+    }
+
+    stopDiagramCss();
+    if (result.css) diagram.stopCss = safely(() => applyScopedCss(result.css), null);
+
+    diagram.el = result.el;
+    // The unscoped stylesheet, for an exported file: the panel's container id
+    // does not exist there, so the scoped sheet would style nothing and a
+    // mermaid export would come out as unstyled shapes.
+    diagram.cssExport = result.cssExport || "";
+    diagram.dropped = result.dropped || null;
+    diagram.droppedDismissed = false;
+    diagram.fallback = source.fallback || null;
+    diagram.error = null;
+    diagram.state = "ready";
+    // Null means "fit it": a freshly mounted diagram has no position yet.
+    diagram.zoom = null;
+    announceDiagramReady(result.dropped, source.fallback);
+  } finally {
+    if (generation === diagram.generation) {
+      diagram.loading = false;
+      renderDiagram();
+    }
+  }
+}
+
+/**
+ * The SVG text, from the renderer or from the committed file.
+ *
+ * `mode: "renderer"` with a `src` as well is the one place this feature
+ * degrades gracefully: a renderer module that never loaded falls back to the
+ * committed copy, because an operator with no route to their CDN should get
+ * their diagram rather than an apology. A renderer that loaded and then
+ * errored is not that case, and is reported as itself.
+ */
+async function obtainDiagramText(d) {
+  const viaRenderer = d.mode === "renderer" && d.renderer && d.renderer.url;
+
+  if (viaRenderer) {
+    const rendered = await renderDiagramSource(d);
+    if (rendered.text) return { text: rendered.text };
+    // `fallbackable` is diagram.js's own distinction between "the module
+    // never loaded" and "it loaded and refused the source". Only the first is
+    // a reason to show an older picture; substituting one for the second would
+    // hide the operator's own mistake.
+    if (rendered.error && rendered.error.fallbackable === true && d.src) {
+      const fetched = await fetchDiagramFile(d);
+      if (fetched.text) {
+        return {
+          text: fetched.text,
+          fallback: {
+            reason: rendered.error.kind === "renderer-blocked" ? "blocked" : "unreachable",
+            url: d.renderer.url,
+            path: d.src,
+          },
+        };
+      }
+      // Neither path worked. The renderer is the configured intent, so its
+      // failure is the one worth naming; the fetch failure is the detail.
+      return {
+        error: {
+          ...rendered.error,
+          detail: `${errorDetail(rendered.error)} The committed copy at ${d.src} could not be read either.`.trim(),
+        },
+      };
+    }
+    return { error: rendered.error };
+  }
+
+  if (d.src) return fetchDiagramFile(d);
+  return { error: { kind: "other", detail: "No diagram source is configured." } };
+}
+
+/**
+ * Import the operator's renderer and draw the config's source with it.
+ *
+ * Our own policy refusing the import is the one thing about it that is
+ * knowable from here, so it is watched for and reported as fact, exactly as
+ * frames.js does for frame-src. Everything else is "that origin could not be
+ * reached", because from inside the page a blocked route, a dead host and a
+ * typo in the URL look identical.
+ */
+async function renderDiagramSource(d) {
+  const url = d.renderer.url;
+  let blocked = false;
+
+  const onViolation = (event) => {
+    const directive = String(event.violatedDirective || event.effectiveDirective || "")
+      .trim()
+      .split(/[\s;]/)[0];
+    if (!RENDERER_DIRECTIVES.includes(directive)) return;
+    if (!rendererOriginMatches(event.blockedURI, url)) return;
+    blocked = true;
+  };
+  document.addEventListener("securitypolicyviolation", onViolation);
+
+  let result;
+  try {
+    result = await attempt(() =>
+      // maxBytes caps the rendered output too: three lines of source can
+      // render into megabytes of SVG.
+      renderSource(d.source, d.renderer, { maxBytes: d.maxBytes }),
+    );
+  } finally {
+    // The violation report can land a tick after the import rejects, so the
+    // listener outlives the call by one turn of the loop.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    document.removeEventListener("securitypolicyviolation", onViolation);
+  }
+
+  if (result && result.text && !result.error) return { text: result.text };
+
+  const error = (result && result.error) || {};
+  const detail = errorDetail(error);
+  const origin = error.origin || originOf(url);
+
+  // An oversized diagram is the same problem whichever path produced it.
+  if (error.kind === "too-large") return { error: oversizeError(error, d, "The rendered diagram") };
+
+  if (error.kind === "renderer-unreachable") {
+    // diagram.js cannot tell a blocked import from an unreachable one, because
+    // the browser does not say. The violation report does, and it is the one
+    // thing here that is knowable as fact, so it upgrades the message and
+    // names our own policy as the thing to change.
+    return {
+      error: {
+        kind: blocked ? "renderer-blocked" : "renderer-unreachable",
+        url,
+        origin,
+        // Only the engine's own cause. diagram.js's message around it is
+        // advice for the same two cases the panel is already wording for
+        // itself, and repeating it reads as a contradiction when the policy
+        // turns out to be the half that is fine.
+        detail: causeOf(detail),
+        fallbackable: true,
+      },
+    };
+  }
+
+  // renderer-shape, renderer-failed: it loaded, and then did not give us an
+  // SVG. Nothing to fall back to, and nothing about the origin to report.
+  return {
+    error: {
+      kind: error.kind === "config" ? "other" : "render-failed",
+      url,
+      origin,
+      detail,
+      fallbackable: false,
+    },
+  };
+}
+
+async function fetchDiagramFile(d) {
+  const result = await attempt(() => fetchDiagram(d.src, { maxBytes: d.maxBytes }));
+  if (result && result.text && !result.error) return { text: result.text };
+  return { error: fetchErrorFor(result && result.error, d) };
+}
+
+/**
+ * Translate diagram.js's error into one of the panel's kinds.
+ *
+ * The contract pins the fields `fetchDiagram` returns but not the shape of the
+ * error inside them, so this reads whatever is there and falls back on "it
+ * could not be fetched", which is both the commonest cause and the safest
+ * thing to say when the detail is unrecognised.
+ */
+function fetchErrorFor(error, d) {
+  const kind = String((error && error.kind) || "");
+  const detail = errorDetail(error);
+
+  if (kind === "too-large") return oversizeError(error, d, d.src);
+  if (kind === "parse") return { kind: "parse", path: d.src, detail };
+  // config, unsupported, network, timeout, http: from the page's point of view
+  // these are all "nothing usable came back from this path", and the detail
+  // says which. Naming the path is the part the operator acts on.
+  return { kind: "missing", path: d.src, detail };
+}
+
+/**
+ * The oversize notice needs both numbers, and diagram.js carries them on the
+ * error; the config's own maxBytes is the fallback for the permitted side.
+ */
+function oversizeError(error, d, subject) {
+  const bytes = Number(error && error.bytes);
+  const max = Number(error && error.maxBytes);
+  return {
+    kind: "too-large",
+    path: subject || d.src,
+    bytes: Number.isFinite(bytes) ? bytes : null,
+    maxBytes: Number.isFinite(max) && max > 0 ? max : Number(d.maxBytes) || null,
+    detail: "",
+  };
+}
+
+/** What to call the thing that failed to parse, when there is no file. */
+function diagramOrigin(d) {
+  if (d.mode === "renderer" && d.renderer && d.renderer.url) return "the renderer's output";
+  return d.src || "the diagram";
+}
+
+function setDiagramError(error) {
+  stopDiagramCss();
+  diagram.state = "error";
+  diagram.error = error;
+  diagram.el = null;
+  diagram.dropped = null;
+  diagram.fallback = null;
+  diagram.zoom = null;
+  announce("The diagram could not be shown. The bookmarks are unaffected.");
+}
+
+function announceDiagramReady(dropped, fallback) {
+  const counts = dropped || {};
+  const removed = Number.isFinite(Number(counts.total))
+    ? Number(counts.total)
+    : Number(counts.elements || 0) +
+      Number(counts.attributes || 0) +
+      Number(counts.declarations || 0) +
+      Number(counts.rules || 0);
+  const altered = removed > 0 ? " Part of it was removed by sanitising; the panel says what." : "";
+  const older = fallback ? " It is the committed copy: the renderer could not be loaded." : "";
+  announce(`The diagram is shown, fitted to the panel.${older}${altered}`);
+}
+
+/** Whatever an unknown error object has to say for itself, as a sentence. */
+function errorDetail(error) {
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  const text = error.message || error.detail || error.reason || error.code || error.kind || "";
+  return String(text || "");
+}
+
+/**
+ * The parenthesised engine message at the end of a diagram.js error, which is
+ * the part that says what actually went wrong, or the whole thing when there
+ * is no such suffix.
+ */
+function causeOf(detail) {
+  const match = /\(([^()]*(?:\([^()]*\)[^()]*)*)\)\s*$/.exec(String(detail || "").trim());
+  return match ? match[1].trim() : String(detail || "");
+}
+
+function originOf(url) {
+  try {
+    return new URL(String(url), window.location.href).origin;
+  } catch {
+    return String(url || "");
+  }
+}
+
+/** Whether a CSP report's blockedURI is the renderer we were importing. */
+function rendererOriginMatches(blockedURI, url) {
+  const blocked = String(blockedURI || "");
+  if (!blocked) return false;
+  const origin = originOf(url);
+  if (blocked === origin || blocked === String(url)) return true;
+  try {
+    return new URL(blocked, window.location.href).origin === origin;
+  } catch {
+    // "inline", "eval" and other keywords are not URLs, and are not ours.
+    return false;
+  }
+}
+
+/** Await something that may throw instead of returning its error. */
+async function attempt(fn) {
+  try {
+    const value = await fn();
+    return value && typeof value === "object" ? value : { value };
+  } catch (error) {
+    return { error };
+  }
+}
+
+/* ---- export -------------------------------------------------------------
+ * Both exports are computed from the sanitised element on screen: no network
+ * request, no dependency, and nothing that could reintroduce a reference the
+ * sanitiser removed.
+ * ---------------------------------------------------------------------- */
+
+function exportDiagramSvg() {
+  if (!diagram.el) return;
+  let text = null;
+  try {
+    text = serializeSvg(diagram.el, { css: diagram.cssExport });
+  } catch {
+    text = null;
+  }
+  if (!text) {
+    announce("The diagram could not be exported as SVG.");
+    return;
+  }
+  downloadBlob(
+    new Blob([text], { type: "image/svg+xml;charset=utf-8" }),
+    `${diagramSlug()}.svg`,
+  );
+  announce("The diagram was exported as SVG.");
+}
+
+async function exportDiagramPng() {
+  if (!diagram.el || diagram.busy) return;
+  diagram.busy = "png";
+  renderDiagram();
+  try {
+    let blob = null;
+    try {
+      blob = await toPng(diagram.el, { scale: PNG_DEFAULT_SCALE, css: diagram.cssExport });
+    } catch {
+      blob = null;
+    }
+    if (!blob) {
+      announce("The diagram could not be exported as PNG.");
+      return;
+    }
+    downloadBlob(blob, `${diagramSlug()}.png`);
+    // Said out loud rather than left to be discovered: the canvas draws with
+    // whatever font the browser resolved, not the one the diagram asked for.
+    announce(
+      `The diagram was exported as PNG at ${PNG_DEFAULT_SCALE}x. Text uses the font the browser substituted.`,
+    );
+  } finally {
+    diagram.busy = null;
+    renderDiagram();
+  }
+}
+
+function diagramSlug() {
+  const d = diagramConfig();
+  const title = (d && d.title) || "diagram";
+  const slug = String(title)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "diagram";
+}
+
+/**
+ * Offer a blob as a download. A temporary <a download> is the only way to name
+ * a file from a page, and `download` on a same-origin blob is not a navigation,
+ * so nothing here depends on the policy.
+ */
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = "noopener";
+  anchor.hidden = true;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  // Revoked late: some browsers need the URL alive until the download starts.
+  window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+/** The panel's keys, added to the shortcuts dialog once a diagram exists. */
+let diagramShortcutsExtended = false;
+
+function extendDiagramShortcuts() {
+  if (diagramShortcutsExtended || !dom.shortcuts) return;
+  const list = dom.shortcuts.querySelector(".shortcut-list");
+  if (!list) return;
+  diagramShortcutsExtended = true;
+  const rows = [
+    [["←", "→", "↑", "↓"], "Pan the diagram (hold Shift to pan further)"],
+    [["+", "-"], "Zoom the diagram in and out"],
+    [["0"], "Fit the diagram to the panel"],
+  ];
+  for (const [keys, text] of rows) {
+    const dt = document.createElement("dt");
+    for (const key of keys) {
+      const kbd = document.createElement("kbd");
+      kbd.textContent = key;
+      dt.append(kbd);
+    }
+    const dd = document.createElement("dd");
+    dd.textContent = text;
+    list.append(dt, dd);
+  }
+}
+
+/* -------------------------------------------------------------------------
  * Search
  * ---------------------------------------------------------------------- */
 
@@ -827,6 +1439,32 @@ function paletteEntries() {
       run: () => dom.search.focus({ preventScroll: true }),
     },
   );
+
+  if (diagramConfig()) {
+    const title = diagramConfig().title;
+    entries.push({
+      kind: "Command",
+      name: diagram.open ? `Hide ${title}` : `Show ${title}`,
+      meta: diagram.state === "ready" ? "loaded" : "the diagram panel",
+      run: () => toggleDiagram(!diagram.open),
+    });
+    if (diagram.state === "ready") {
+      entries.push(
+        {
+          kind: "Command",
+          name: `Export ${title} as SVG`,
+          meta: "computed in the browser",
+          run: exportDiagramSvg,
+        },
+        {
+          kind: "Command",
+          name: `Export ${title} as PNG`,
+          meta: `${PNG_DEFAULT_SCALE}x, fonts as the browser resolved them`,
+          run: exportDiagramPng,
+        },
+      );
+    }
+  }
 
   const open = frameCount();
   if (open) {
@@ -1080,6 +1718,11 @@ function init() {
 
   dom.root.addEventListener("quickportal:clear-search", () => clearSearch(true));
   dom.root.addEventListener("quickportal:retry", () => load());
+
+  // Read before the first config arrives, so that a panel the viewer left open
+  // loads its diagram as soon as there is a diagram to load, and a panel they
+  // left closed never asks for one.
+  diagram.open = safely(() => getDiagramOpen(), false) === true;
 
   bindKeyboard();
   initFrames();

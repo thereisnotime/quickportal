@@ -16,16 +16,16 @@
 
 ## 3. Fetch, panel and export
 
-- [ ] 3.1 `fetchDiagram` with the size limit enforced before parsing, and distinct outcomes for missing, oversized and unparseable
-- [ ] 3.2 Lazy fetch on first open, cached until the configuration changes
-- [ ] 3.3 `renderDiagramPanel`: pan, zoom, fit-to-view, the drop notice, and every failure state as a notice that leaves the bookmarks working
-- [ ] 3.4 Keyboard operation for toggle, zoom, fit and export, with the zoom level conveyed, and pan without a pointer
-- [ ] 3.5 `serializeSvg` and `toPng(scale)` using canvas, with no dependency and no network
-- [ ] 3.6 Preserve pan, zoom and open state across a config re-render
+- [x] 3.1 `fetchDiagram` with the size limit enforced before parsing, and distinct outcomes for missing, oversized and unparseable
+- [x] 3.2 Lazy fetch on first open, cached until the configuration changes
+- [x] 3.3 `renderDiagramPanel`: pan, zoom, fit-to-view, the drop notice, and every failure state as a notice that leaves the bookmarks working
+- [x] 3.4 Keyboard operation for toggle, zoom, fit and export, with the zoom level conveyed, and pan without a pointer
+- [x] 3.5 `serializeSvg` and `toPng(scale)` using canvas, with no dependency and no network
+- [x] 3.6 Preserve pan, zoom and open state across a config re-render
 
 ## 4. Rendering diagram source in the page
 
-- [ ] 4.1 Import the configured renderer module and render the config's source through it, then through the sanitiser, with a clear panel message when the origin is unreachable
+- [x] 4.1 Import the configured renderer module and render the config's source through it, then through the sanitiser, with a clear panel message when the origin is unreachable
 - [x] 4.2 Detect our own `script-src` refusing the import and name the policy as the thing to change
 - [x] 4.3 Make `script-src` configurable in the server config, defaulting to this origin only
 - [x] 4.4 Helm value and kustomize patch for the renderer origin, plus the chart refusing the half-configured state

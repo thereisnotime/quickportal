@@ -420,6 +420,7 @@ function pickRendererApi(mod) {
  * @returns {{el?: object, css: string, inlineStyles: Array, dropped: object, error?: object}}
  *   el            the rebuilt <svg>, owned by `deps.document`, never appended
  *   css           the extracted <style> text, filtered and scoped to scopeId
+ *   cssExport     the same declarations unscoped, for serializeSvg/toPng
  *   inlineStyles  [{el, declarations: [[prop, value], ...]}] for every element
  *                 that carried a `style` attribute. Already applied to `el`
  *                 through the CSSOM; returned too so the panel can re-apply
@@ -477,10 +478,15 @@ export function sanitizeSvg(text, options = {}) {
     };
   }
 
-  const css = scopeCss(ctx.css.join('\n'), ctx.scopeId, ctx.dropped);
+  const raw = ctx.css.join('\n');
+  const css = scopeCss(raw, ctx.scopeId, ctx.dropped);
   return {
     el,
     css,
+    // The same declarations without the container prefix, for an exported file
+    // where that container does not exist. Computed here so a caller never has
+    // to keep the raw stylesheet around, or try to unpick the scoped one.
+    cssExport: filterCssForExport(raw),
     inlineStyles: ctx.inlineStyles,
     dropped: total(ctx.dropped),
   };
@@ -654,6 +660,24 @@ export function scopeCss(css, scopeId, dropped = zeroDropped()) {
   }
 
   return emitNodes(splitNodes(stripCssNoise(text)), `#${scopeId}`, dropped).join('\n');
+}
+
+/**
+ * The same filtered stylesheet with no scope prefix, for an exported file.
+ *
+ * An export is a standalone document: the panel's container id does not exist
+ * in it, so the scoped sheet would match nothing and the diagram would come out
+ * unstyled. Scoping exists to stop a renderer's `.node rect` rule repainting
+ * the bookmark tree, and in a file there is no bookmark tree to protect.
+ *
+ * Declarations and at-rules are filtered exactly as for the page, so this is
+ * not a laxer path: it is the same rules without a prefix. Nothing calls it to
+ * put CSS back into this document.
+ */
+export function filterCssForExport(css) {
+  const text = typeof css === 'string' ? css : '';
+  if (text.trim() === '') return '';
+  return emitNodes(splitNodes(stripCssNoise(text)), '', zeroDropped()).join('\n');
 }
 
 function emitNodes(nodes, prefix, dropped) {
@@ -1022,6 +1046,23 @@ export function serializeSvg(el, options = {}) {
   if (!text.includes('xmlns=')) {
     text = text.replace(/^<svg\b/, `<svg xmlns="${SVG_NS}"`);
   }
+
+  // The renderer's stylesheet lives in an adopted stylesheet, not in the tree,
+  // so without this an exported mermaid diagram is a pile of unstyled shapes:
+  // every fill, stroke and font it depends on is in that CSS. The declarations
+  // were already filtered by the sanitiser, and `css` is expected to be the
+  // UNSCOPED form, since the panel's container id does not exist in the file.
+  //
+  // Putting a <style> in an exported file is not the thing the allowlist
+  // forbids: that rule is about what this page parses and inlines. This text is
+  // never parsed here, it is handed to the user. The file will not round-trip
+  // through our own importer, which drops style elements, and that is the right
+  // trade for an export meant for a document or a slide.
+  const css = typeof options.css === 'string' ? options.css.trim() : '';
+  if (css !== '') {
+    const style = `<style type="text/css">\n${css}\n</style>`;
+    text = text.replace(/^(<svg\b[^>]*>)/, `$1${style}`);
+  }
   return text;
 }
 
@@ -1053,20 +1094,26 @@ export function toPng(el, options = {}) {
   const scale = toScale(options.scale);
 
   return new Promise((resolve, reject) => {
-    if (!el || !doc || typeof BlobCtor !== 'function' || !urls?.createObjectURL) {
+    if (!el || !doc || typeof BlobCtor !== 'function') {
       reject(new Error('PNG export is not available in this browser.'));
       return;
     }
 
-    const text = serializeSvg(el, { deps });
+    const text = serializeSvg(el, { deps, css: options.css });
     if (text === '') {
       reject(new Error('The diagram could not be serialised.'));
       return;
     }
 
     const size = sizeOf(el);
-    const blob = new BlobCtor([text], { type: 'image/svg+xml;charset=utf-8' });
-    const objectUrl = urls.createObjectURL(blob);
+    // A data: URL, not a blob: URL. The policy this project ships is
+    // `img-src 'self' https: data:`, which does not include blob:, so an <img>
+    // pointed at an object URL never decodes and the export fails with nothing
+    // to show for it. This was found by exporting under the real policy rather
+    // than by reading the code, and widening img-src to blob: would have been
+    // the wrong fix: it changes every deployment's policy to serve one feature
+    // that does not need it.
+    const sourceUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`;
     const img = deps.Image ? new deps.Image() : doc.createElement('img');
     let settled = false;
 
@@ -1079,7 +1126,6 @@ export function toPng(el, options = {}) {
       settled = true;
       timer.cancel();
       try {
-        urls.revokeObjectURL?.(objectUrl);
       } catch {
         // Nothing to do if the URL was never registered.
       }
@@ -1108,7 +1154,7 @@ export function toPng(el, options = {}) {
       finish(() => reject(new Error('The diagram could not be decoded as an image.')));
     };
 
-    img.src = objectUrl;
+    img.src = sourceUrl;
   });
 }
 

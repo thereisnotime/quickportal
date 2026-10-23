@@ -4,6 +4,7 @@
              6 portal head and sets - 7 tree - 8 cards and icons - 9 dialogs
              10 footer - 11 density - 12 motion and print
              13 tab strip, frame host, focus mode and the nudge bar
+             14 the diagram panel
    No @import, no webfont, no third-party origin: the CSP is default-src 'self'.
    ========================================================================== */
 
@@ -1314,5 +1315,178 @@ body[data-focus-mode="on"] .framehost {
 @container (max-width: 15rem) {
   .card-embed {
     display: none;
+  }
+}
+
+/* 14. The diagram panel ==================================================== */
+
+/* #diagram-panel is a sibling of <main>; see the comment in index.html.
+   Nothing in this section may move it, and nothing here may introduce a
+   style attribute or an @import: the transform and the renderer's own
+   stylesheet are both applied through the CSSOM instead. */
+
+.diagram {
+  display: grid;
+  gap: var(--sp-2);
+  margin-block: var(--sp-4);
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow);
+}
+
+.diagram-head {
+  font-size: inherit;
+}
+
+.diagram-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: var(--target);
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.diagram-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.diagram-name {
+  min-width: 0;
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+
+/* Same rotation rule as a group's chevron, which is why it reuses .chev. */
+.diagram-toggle[aria-expanded="false"] .chev {
+  transform: rotate(-90deg);
+}
+
+.diagram-body {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.diagram-notices:empty {
+  display: none;
+}
+
+.diagram-status {
+  color: var(--fg-muted);
+  font-size: 0.88rem;
+}
+
+.diagram-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.diagram-zoom {
+  min-width: 5.5rem;
+  color: var(--fg-faint);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+/* The exports are the destructive-free end of the toolbar and are pushed
+   away from the zoom controls so the two groups do not read as one. */
+.diagram-toolbar [data-diagram-action="export-svg"] {
+  margin-left: auto;
+}
+
+.diagram-toolbar .btn[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The viewport clips; the canvas inside it is what moves. overflow: hidden
+   rather than auto on purpose: scrollbars would fight the drag gesture, and
+   the keyboard and the fit button are how someone reaches the edges. */
+.diagram-viewport {
+  position: relative;
+  height: clamp(16rem, 52vh, 44rem);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+  /* A finger still scrolls the page and still pinch-zooms it: dragging the
+     diagram is a mouse and pen gesture, so nothing here traps touch. */
+  touch-action: pan-x pan-y pinch-zoom;
+  cursor: grab;
+}
+
+.diagram-viewport[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.diagram-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* The transform is written with element.style.setProperty from render.js,
+     scaling about the top-left so the arithmetic for a fit is one line. */
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* The sanitised SVG keeps its own intrinsic size, which is what fit-to-view
+   measures; it must not be stretched to the viewport or the scale would
+   always be 1. The renderer's extracted stylesheet is scoped to
+   #qp-diagram-scope and adopted through the CSSOM, so it lands on top of
+   these with the same specificity story as before it was extracted. */
+#qp-diagram-scope > svg {
+  display: block;
+  max-width: none;
+  max-height: none;
+}
+
+.diagram-hint {
+  color: var(--fg-faint);
+  font-size: 0.78rem;
+}
+
+/* Focus mode gives the viewport to an embedded app; a diagram panel competing
+   for that space would defeat it. */
+body[data-focus-mode="on"] > #diagram-panel {
+  display: none;
+}
+
+@media (max-width: 46rem) {
+  .diagram-toolbar [data-diagram-action="export-svg"] {
+    margin-left: 0;
+  }
+}
+
+/* A diagram is a picture: print it whole and drop the chrome around it. */
+@media print {
+  .diagram-toolbar,
+  .diagram-hint {
+    display: none;
+  }
+
+  .diagram-viewport {
+    height: auto;
+    overflow: visible;
+    border: 0;
+    background: none;
+  }
+
+  /* !important because the transform is set on the element itself from
+     render.js, and element.style beats a stylesheet rule without it. */
+  .diagram-canvas {
+    position: static;
+    transform: none !important;
   }
 }

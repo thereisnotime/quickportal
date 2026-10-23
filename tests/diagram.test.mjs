@@ -1273,9 +1273,10 @@ function pngDeps() {
       urls.revoked.push(url);
     },
   };
-  return {
+  const harness = {
     made,
     urls,
+    lastSrc: null,
     deps: {
       document: doc,
       Image: FakeImage,
@@ -1289,6 +1290,15 @@ function pngDeps() {
       XMLSerializer: FakeXMLSerializer,
     },
   };
+  // Record the src the module assigns, so a test can assert the scheme it uses.
+  const Base = harness.deps.Image;
+  harness.deps.Image = class extends Base {
+    set src(value) {
+      harness.lastSrc = value;
+      super.src = value;
+    }
+  };
+  return harness;
 }
 
 test('toPng draws the viewBox at the requested scale and resolves a blob', async () => {
@@ -1299,8 +1309,23 @@ test('toPng draws the viewBox at the requested scale and resolves a blob', async
   assert.equal(harness.made[0].width, 300);
   assert.equal(harness.made[0].height, 300);
   assert.deepEqual(harness.made[0].drawn, { x: 0, y: 0, w: 300, h: 300 });
-  assert.equal(harness.urls.revoked.length, 1, 'the object URL is released');
   assert.equal(harness.deps.Blob.name, 'FakeBlob');
+
+  // No object URL, deliberately. The policy this project ships is
+  // `img-src 'self' https: data:`, with no blob:, so an <img> pointed at an
+  // object URL never decodes and the export fails silently. It must be a data:
+  // URL, and nothing may reintroduce a blob URL here without this failing.
+  assert.equal(harness.urls.created.length, 0, 'no blob URL is created');
+  assert.match(harness.lastSrc, /^data:image\/svg\+xml;charset=utf-8,/);
+});
+
+test('the PNG source carries the export stylesheet, or a styled diagram exports bare', async () => {
+  const out = sanitize(svg('<rect class="box" width="10" height="10"/>'));
+  const harness = pngDeps();
+  await toPng(out.el, { deps: harness.deps, css: '.box { fill: #2a52c9; }' });
+  const decoded = decodeURIComponent(harness.lastSrc.split(',')[1]);
+  assert.match(decoded, /<style type="text\/css">/);
+  assert.match(decoded, /\.box \{ fill: #2a52c9; \}/);
 });
 
 test('toPng defaults to the documented scale and falls back to width/height', async () => {
@@ -1321,7 +1346,7 @@ test('toPng rejects rather than throwing when the SVG cannot be decoded', async 
     }
   };
   await assert.rejects(() => toPng(out.el, { deps: harness.deps }), /could not be decoded/);
-  assert.equal(harness.urls.revoked.length, 1);
+  assert.equal(harness.urls.created.length, 0, 'still no blob URL to leak');
 });
 
 test('toPng rejects when the browser cannot do it at all', async () => {
