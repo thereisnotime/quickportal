@@ -24,8 +24,7 @@ So the capability is shaped around what the delivery model can carry: the portal
 
 **Non-Goals:**
 
-- **Shipping a diagram renderer.** See the numbers above.
-- **Rendering a diagram language in the page by default.** Available only through the opt-in hook below.
+- **Shipping or bundling a renderer.** The page imports one the operator names, and that import is off until they name it.
 - **Editing diagrams in the browser.** This is a viewer.
 - **Supporting arbitrary untrusted SVG from the internet.** The diagram is content the operator put in their own ConfigMap; it is still sanitised, but the threat model is "my own file does something I did not intend", not "a stranger's file".
 
@@ -86,22 +85,69 @@ A diagram is decoration for most of the page's purpose, so every failure degrade
 
 In every case the bookmark tree renders normally.
 
-### The optional renderer hook, and what it costs
+### Rendering mermaid in the page: the normal path, not an afterthought
 
-For operators who want a diagram language rendered live in the page:
+Supplying a rendered SVG is one way in. The other, and the one most people
+actually want, is writing the diagram source in the config and having the page
+render it:
 
 ```yaml
 diagram:
+  title: Architecture
   renderer:
-    url: https://portal.example.com/vendor/renderer.mjs   # self-hosted
-    source: ./config/diagram.mmd
+    url: https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.esm.min.mjs
+    options: {theme: dark, securityLevel: strict, flowchart: {htmlLabels: false}}
+  source: |
+    flowchart TD
+      ingress[Ingress] --> portal[Portal]
+      portal --> apps[Apps]
 ```
 
-The portal imports that module and asks it to turn the source text into SVG, then puts the result through the same sanitiser. It is off unless configured, and configuring it requires widening `script-src` in the deployment exactly like `frame-src` for embedding, with the same two-part switch and the same half-configured detection.
+The renderer is a URL because the project cannot ship one: measured above, it is
+2.6 times the ConfigMap limit. A URL is not a workaround, it is the only shape
+that works, and it is what every portal doing this today already does.
 
-This is the only feature in the project that executes code the project did not ship, so the documentation says so in those words, and the default path never touches it. Self-hosting is strongly recommended over a CDN in the docs, but the field takes any URL the policy permits, because refusing to let an operator point at their own mirror would be theatre.
+The entry module is small (26KB for mermaid's ESM build) and pulls further
+chunks on demand from the same origin, so the page stays light until the panel
+is opened.
 
-*Alternatives:* no hook at all (honest, but it forces a CI step on everyone whose source is a diagram language, and some will just go back to a hand-maintained HTML page); a server-side render step (needs a backend).
+**What it costs, stated plainly:** the deployment must add that origin to
+`script-src`. Nothing else. The page imports a module the project did not ship,
+which is a real concession and the only one of its kind here, so it is off until
+configured and it takes a deployment-level change exactly like `frame-src` for
+embedding, with the same half-configured detection.
+
+Self-hosting the renderer is better than a CDN and the docs say so, but the
+field takes any URL the policy permits: refusing to let an operator point at a
+public CDN while their current page already does would be theatre, and it would
+just send them back to a hand-maintained HTML file.
+
+When the renderer cannot be reached, the panel says the diagram needs that
+origin and the bookmarks are untouched, which is the behaviour an offline
+laptop should get.
+
+### Renderer output needs its CSS, and the CSP must not be loosened for it
+
+A renderer emits an SVG carrying a `<style>` element: mermaid's output is a pile
+of elements with classes, and dropping that stylesheet does not degrade the
+diagram, it destroys it. But an inline `<style>` in the document requires
+`style-src 'unsafe-inline'`, which is too high a price for a picture, and a
+static nginx cannot mint a per-request nonce.
+
+So the sanitiser **extracts** the stylesheet instead of inlining it: the CSS
+text is filtered (no `url(`, `@import`, `expression(`, `behavior:`), scoped to
+the diagram container, and applied through a constructed stylesheet in the
+CSSOM. CSSOM is not subject to `style-src`, so the diagram keeps its appearance
+and the policy stays `style-src 'self'`.
+
+The same applies to `style` attributes the renderer emits: they are read and
+re-applied with `setProperty`, never left as attributes.
+
+*Alternatives:* `style-src 'unsafe-inline'` when a renderer is configured (one
+line, and it weakens the policy against the entire page rather than the
+diagram); converting CSS rules to presentation attributes (lossy, and
+mermaid's selectors do not map cleanly); dropping styles (produces a diagram
+nobody would accept).
 
 ### Module layout
 
@@ -131,4 +177,8 @@ An operator moving from a page that rendered a diagram language in the browser r
 
 - Whether `maxBytes` should default to 512KiB or lower. 512KiB is half the ConfigMap and already enough to make inlining slow on a phone.
 - Whether to support more than one diagram. One panel covers the use case; several would want naming, ordering and a selector, and that can wait for someone who needs it.
-- Whether the sanitiser should keep `<style>` elements with a filtered allowlist of properties rather than dropping them. Dropping is safe and loses diagram theming that renderers commonly emit, so this one will probably need revisiting with a real file in hand.
+- Whether the renderer's `options` should be passed through verbatim or
+  allowlisted. Verbatim for now, since they are the operator's own settings and
+  the renderer is theirs; `securityLevel` is the one worth documenting, because
+  a renderer told to trust its input will happily emit things the sanitiser then
+  removes.

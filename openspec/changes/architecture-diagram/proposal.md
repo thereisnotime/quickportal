@@ -9,10 +9,10 @@ So the capability has to be shaped around the delivery model rather than around 
 ## What Changes
 
 - A new optional **diagram** view: a panel showing a diagram the operator supplies as **SVG**, with pan, zoom, fit-to-view and export.
-- The diagram is **authored however the operator likes** and rendered to SVG before it reaches the cluster, by any tool: a diagram language compiled in their own CI, a drawing program, anything that emits SVG. QuickPortal displays it and does not care how it was made.
+- Alternatively a **pre-rendered SVG** from any tool, for operators who would rather not have the page import anything at all.
 - The SVG lives in the operator's own ConfigMap, like their config, so updating the diagram is a commit and does not roll the pod.
 - **Export** to SVG and to PNG, rendered in the browser from the SVG with no dependency.
-- An **optional, explicitly opt-in renderer hook** for operators who want a diagram language rendered live in the page: a URL to a self-hosted renderer, which requires widening `script-src` in the deployment. Off by default, documented as the only feature in the project that loads code the project did not ship.
+- **Diagram source rendered in the page**, which is what most people want: write mermaid (or any renderer's language) in the config, name the renderer's URL, and the page renders it. The project cannot ship a renderer at 2.6 times the ConfigMap limit, so it imports the one the operator names. That requires adding the renderer's origin to `script-src`, off until configured, and it is the only feature here that executes code the project did not ship.
 - The diagram is **not** on the critical path: a missing, oversized or malformed diagram must leave the bookmarks working.
 
 Not in this change: shipping a diagram renderer, bundling a diagram language, fetching anything from a CDN by default, or editing diagrams in the browser.

@@ -8,7 +8,8 @@
 ## 2. Sanitiser
 
 - [ ] 2.1 `src/assets/diagram.js`: parse with `DOMParser` as `image/svg+xml`, never as markup, with `DOMParser`, `XMLSerializer` and `document` injected so it is testable in plain Node
-- [ ] 2.2 Rebuild against an element and attribute allowlist, dropping scripts, `on*` handlers, `foreignObject`, animation elements, `base`, and `style` elements and attributes carrying `url(`, `@import`, `expression(` or `behavior:`
+- [ ] 2.2 Rebuild against an element and attribute allowlist, dropping scripts, `on*` handlers, `foreignObject`, animation elements and `base`
+- [ ] 2.2b Extract `style` elements and `style` attributes rather than dropping them: filter the declarations, scope them to the diagram container, and apply them through a constructed stylesheet and `setProperty`, so a renderer's output keeps its appearance under `style-src 'self'`
 - [ ] 2.3 Keep fragment references, drop external and `javascript:` references on every reference-bearing attribute
 - [ ] 2.4 Report what was dropped, as counts, so the panel can tell the operator their diagram was altered
 - [ ] 2.5 Adversarial tests: one fixture per dangerous construct, asserting removal, plus a legitimate diagram asserting nothing is dropped
@@ -22,9 +23,9 @@
 - [ ] 3.5 `serializeSvg` and `toPng(scale)` using canvas, with no dependency and no network
 - [ ] 3.6 Preserve pan, zoom and open state across a config re-render
 
-## 4. The optional renderer hook
+## 4. Rendering diagram source in the page
 
-- [ ] 4.1 Import the configured module and render the source through it, then through the sanitiser
+- [ ] 4.1 Import the configured renderer module and render the config's source through it, then through the sanitiser, with a clear panel message when the origin is unreachable
 - [ ] 4.2 Detect our own `script-src` refusing the import and name the policy as the thing to change
 - [ ] 4.3 Make `script-src` configurable in the server config, defaulting to this origin only
 - [ ] 4.4 Helm value and kustomize patch for the renderer origin, plus the chart refusing the half-configured state

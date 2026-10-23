@@ -79,8 +79,8 @@ Every diagram failure SHALL degrade to a notice, leaving the bookmarks fully usa
 - **WHEN** the file is not valid SVG
 - **THEN** a notice names the parse failure and the bookmark tree renders normally
 
-### Requirement: Live rendering of a diagram language is opt-in and costs a policy change
-The portal MAY import an operator-supplied renderer module to turn diagram source into SVG. It SHALL be absent unless configured, and its output SHALL pass through the same sanitiser.
+### Requirement: Diagram source is rendered in the page by a renderer the operator names
+The portal MAY import a renderer module named by the operator and use it to turn diagram source in the config into SVG. The import SHALL be absent unless configured, and the output SHALL pass through the same sanitiser as a supplied file.
 
 #### Scenario: Renderer not configured
 - **WHEN** no renderer is configured
@@ -88,7 +88,11 @@ The portal MAY import an operator-supplied renderer module to turn diagram sourc
 
 #### Scenario: Renderer configured and permitted
 - **WHEN** a renderer URL is configured and the deployment permits that origin in `script-src`
-- **THEN** the source is rendered, sanitised and displayed
+- **THEN** the source from the config is rendered, sanitised and displayed
+
+#### Scenario: Renderer unreachable
+- **WHEN** the renderer's origin cannot be reached, such as on a machine with no route to it
+- **THEN** the panel states that the diagram needs that origin, and the bookmarks are unaffected
 
 #### Scenario: Renderer configured but not permitted
 - **WHEN** a renderer URL is configured and the deployment's policy forbids it
@@ -97,3 +101,18 @@ The portal MAY import an operator-supplied renderer module to turn diagram sourc
 #### Scenario: Renderer output is not trusted
 - **WHEN** a renderer returns SVG containing a script element
 - **THEN** it is sanitised exactly as a supplied file would be
+
+### Requirement: A renderer's stylesheet is preserved without loosening the policy
+Renderer output carries a stylesheet its appearance depends on. The portal SHALL preserve that styling and SHALL NOT require `style-src 'unsafe-inline'` to do so.
+
+#### Scenario: Styled renderer output
+- **WHEN** the rendered SVG contains a `style` element whose rules its elements depend on
+- **THEN** the rules are filtered, scoped to the diagram, and applied through the CSSOM, so the diagram looks as the renderer intended under `style-src 'self'`
+
+#### Scenario: Dangerous CSS in that stylesheet
+- **WHEN** the stylesheet contains `url(`, `@import`, `expression(` or `behavior:`
+- **THEN** those declarations are removed before anything is applied
+
+#### Scenario: Style attributes in renderer output
+- **WHEN** the rendered SVG carries `style` attributes
+- **THEN** their declarations are re-applied through the CSSOM rather than left as attributes
