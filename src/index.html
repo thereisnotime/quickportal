@@ -73,6 +73,19 @@
       </p>
     </noscript>
 
+    <!--
+      The tab strip and the frame host are siblings of <main>, never descendants
+      of it, and nothing that re-renders may contain them.
+
+      Rendering replaces and reparents nodes inside #portal. Moving an <iframe>
+      in the DOM reloads it in every browser, which would throw away whatever
+      the user had open in an embedded app: a half-written form, a console, a
+      playing stream. Keeping the frames outside #portal is what makes a config
+      change survivable. Do not "tidy" these into the main element.
+    -->
+    <div id="tab-strip" class="shell tabstrip" role="tablist" aria-label="Open apps" hidden></div>
+    <div id="frame-host" class="framehost" hidden></div>
+
     <main id="portal" class="shell portal" tabindex="-1"></main>
 
     <!-- Announcements: search result counts, set results, reload outcomes. -->

@@ -88,6 +88,42 @@ Nothing in the page can fix this. It goes in the documentation next to the heade
 
 Which tabs were open is remembered per browser, like theme and collapse state, and restored on load. Restoring is a fresh mount, so the apps start from scratch: remembering *which* apps were open is useful, and pretending their state survived a page reload would be a lie.
 
+### Module and DOM contract
+
+Written here first so the pieces can be built independently, as in the previous
+change.
+
+**DOM, already in `index.html`:** `#tab-strip` (`role="tablist"`) and
+`#frame-host` are siblings of `<main id="portal">`. Nothing that re-renders may
+contain them. Focus mode is `document.body.dataset.focusMode = "on"`.
+
+**`src/assets/frames.js`** owns every frame and knows nothing about rendering:
+
+- `FRAME_DEFAULT_MAX = 4`
+- `createFrameHost(hostEl, {maxFrames, onChange, deps}) -> host`
+- `host.open(item)` mounts or focuses, returns `{mounted, focused, evicted}`
+- `host.focus(id)`, `host.close(id)`, `host.closeAll()`
+- `host.refresh(id)`, `host.refreshAll()`
+- `host.list()` returns `[{id, item, focused, mountedAt, lastFocusedAt}]` in
+  strip order
+- `host.has(id)`, `host.count()`, `host.max`, `host.setMax(n)`
+- `host.restore(ids, itemsById)` mounts a remembered set, skipping unknown ids
+- `host.destroy()` removes every frame and listener
+- `onChange(list)` fires after any change, and is the only thing the strip
+  renders from
+- `watchFramePolicy(onBlocked, deps) -> stop()` listens for
+  `securitypolicyviolation` with `violatedDirective` of `frame-src` and reports
+  the blocked URI. This detects **our own** policy refusing a frame, which is
+  knowable, and says nothing about whether the target allows framing, which is
+  not.
+
+**The view layer** renders the strip from `onChange`, calls the host for every
+action, and owns focus mode. It must never create, move or remove a frame
+element itself.
+
+**`state.js`** gains `getOpenTabs()` / `setOpenTabs(ids)`, stored like the other
+per-viewer preferences and wrapped the same way.
+
 ## Risks / Trade-offs
 
 - **A re-render reparents a frame and silently destroys a session** → the frame container is outside the re-rendered subtree, asserted by a test on element identity across a re-render.
