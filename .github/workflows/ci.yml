@@ -13,8 +13,12 @@ env:
   KUSTOMIZE_VERSION: v5.8.3
   KUBECONFORM_VERSION: v0.8.0
   # Keep in step with the budget documented in docs/CONFIGURATION.md. The real
-  # limit is the 1MiB ConfigMap ceiling; this fails long before a cluster does.
-  SRC_CEILING_BYTES: 307200
+  # limit is the 1MiB ConfigMap ceiling, shared with the user's own config, so
+  # this still fails long before a cluster does. Raised from 300KiB when the
+  # embedding work left 13KB of headroom: a ceiling with no room left stops
+  # being a budget and starts being an obstacle, and about 105KiB of the total
+  # is the vendored YAML parser rather than our own code.
+  SRC_CEILING_BYTES: 393216
 
 jobs:
   test:

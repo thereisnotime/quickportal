@@ -23,6 +23,8 @@ node tools/validate-config.mjs --strict config.yaml # warnings fail too
 | `layout.density` | `comfortable` \| `compact` | `comfortable` | `compact` tightens spacing, and on precise pointers only, target sizes. |
 | `layout.minCardWidth` | CSS length | `14rem` | Drives the grid; the columns are computed from it. |
 | `reload.interval` | integer seconds | `30` | `0` disables polling. The manual reload button always works. |
+| `embedding.maxFrames` | integer 1-16 | `4` | Cap on apps open inside the portal at once. |
+| `embedding.docsUrl` | URL | none | Points the "why can a frame stay blank" help at your own runbook. |
 | `groups` | list of group | `[]` | The tree. |
 | `sets` | list of set | `[]` | Named groups of targets that open together. |
 
@@ -47,7 +49,10 @@ node tools/validate-config.mjs --strict config.yaml # warnings fail too
 | `description` | string | none | Shown under the name, and searched. |
 | `icon` | string | none | Emoji or text, a URL, or `auto` for the origin's favicon. Falls back to initials. |
 | `tags` | list of string | `[]` | Searched, shown as chips. |
-| `target` | `_blank` \| `_self` | `_blank` | |
+| `target` | `_blank` \| `_self` | `_blank` | Ignored when `embed` is true. |
+| `embed` | boolean | `false` | Open inside the portal in a tab strip instead of a browser tab. Requires a server-config change too: see [EMBEDDING.md](EMBEDDING.md). |
+| `allow` | list of string | `[]` | Browser permissions delegated to the embedded app: `autoplay`, `clipboard-read`, `clipboard-write`, `encrypted-media`, `fullscreen`, `picture-in-picture`. Camera, microphone, geolocation and screen capture are deliberately not delegable. |
+| `sandbox` | list of string | `[]` | Standard `allow-*` iframe sandbox tokens. Empty means no `sandbox` attribute at all, which is not the same as HTML's `sandbox=""`. |
 
 ## Set
 
@@ -110,11 +115,32 @@ written for a later version still works), a bad enum value or wrong type, which
 falls back to the documented default, and nesting past five levels, which is
 truncated there.
 
+## Embedding
+
+`embed: true` opens an item inside the portal rather than in a browser tab. It
+needs two things beyond this file: the deployment must widen the portal's own
+`frame-src` policy, and the app being embedded must permit framing. Neither is
+something this config can do, and when either is missing the result is an empty
+rectangle.
+
+[EMBEDDING.md](EMBEDDING.md) covers the headers the target app must send, how to
+widen the policy with Helm or kustomize, why the portal cannot tell you which of
+the three steps is missing, and the third-party cookie problem that makes an
+embedded app on an unrelated domain refuse to stay logged in.
+
+Two behaviours worth knowing here:
+
+- `embed: true` on a URL that cannot be framed, such as a `mailto:` link, is a
+  **warning**, not an error. The item stays and opens in a browser tab.
+- An unrecognised `allow` or `sandbox` token is a warning and is dropped rather
+  than passed through to the browser.
+
 ## Limits
 
 - **Five levels** of nesting. Deeper is a warning and is truncated.
 - **One ConfigMap**, so the app plus your config must fit in 1MiB. The app is
-  about 212KiB of that; CI fails above 300KiB.
+  about 288KiB of that, roughly 105KiB of which is the vendored YAML parser; CI
+  fails above 384KiB.
 - **No `subPath`** on the config volume, or kubelet will never update it and live
   reload silently stops working.
 - **Never `immutable: true`** on `quickportal-config`: it could then never
@@ -128,3 +154,5 @@ truncated there.
 - `examples/config/nested-sets.yaml` — nesting, and sets using item ids, group
   ids and a bare URL.
 - `examples/config/full.yaml` — every field above, annotated.
+- `examples/kustomize/embedding/` — a copy-out overlay enabling embedding, with
+  both halves of the switch in one place.

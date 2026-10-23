@@ -108,7 +108,7 @@ const ROOT_KEYS = [
 ];
 const LAYOUT_KEYS = ["density", "minCardWidth"];
 const RELOAD_KEYS = ["interval"];
-const EMBEDDING_KEYS = ["maxFrames"];
+const EMBEDDING_KEYS = ["maxFrames", "docsUrl"];
 const GROUP_KEYS = ["id", "name", "icon", "collapsed", "items", "groups"];
 const ITEM_KEYS = [
   "id",
@@ -358,6 +358,7 @@ function normalizeEmbedding(raw, config, ctx) {
     return embedding;
   }
   warnUnknownKeys(raw, EMBEDDING_KEYS, "embedding", ctx);
+  readDocsUrl(raw, embedding, ctx);
 
   const max = raw.maxFrames;
   if (max === undefined || max === null) return embedding;
@@ -373,6 +374,26 @@ function normalizeEmbedding(raw, config, ctx) {
   }
   embedding.maxFrames = max;
   return embedding;
+}
+
+/**
+ * Where "why can a frame stay blank" points.
+ *
+ * The page cannot link to this repository's own documentation: the served tree
+ * is a flat ConfigMap with no docs in it, and there is no host to hardcode. So
+ * the escape-hatch bar states the headers inline, and this optional key lets a
+ * deployment point at its own runbook instead.
+ */
+function readDocsUrl(raw, embedding, ctx) {
+  const url = raw.docsUrl;
+  if (url === undefined || url === null) return;
+  if (typeof url !== "string" || !isUsableUrl(url)) {
+    ctx.warnings.push(
+      issue("embedding.docsUrl", `expected a URL, got ${JSON.stringify(url)}; no documentation link is shown`),
+    );
+    return;
+  }
+  embedding.docsUrl = url;
 }
 
 // ---------------------------------------------------------------------------

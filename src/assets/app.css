@@ -3,6 +3,7 @@
    Sections: 1 tokens - 2 base - 3 utilities - 4 toolbar - 5 notices and issues
              6 portal head and sets - 7 tree - 8 cards and icons - 9 dialogs
              10 footer - 11 density - 12 motion and print
+             13 tab strip, frame host, focus mode and the nudge bar
    No @import, no webfont, no third-party origin: the CSP is default-src 'self'.
    ========================================================================== */
 
@@ -46,6 +47,9 @@
 
   /* Overridden from config.layout.minCardWidth at runtime. */
   --min-card-width: 14rem;
+  /* Height of the embedded-app area outside focus mode. Inside focus mode the
+     body becomes a flex column and the frame host takes what is left. */
+  --frame-h: clamp(20rem, 62vh, 60rem);
   /* Per-level indentation of nested groups; deliberately small so depth 4
      still fits a 320px screen. */
   --indent: clamp(0.5rem, 1.6vw, 0.9rem);
@@ -1004,12 +1008,311 @@ kbd {
   .toolbar,
   .appfoot,
   .sets,
-  .skip-link {
+  .skip-link,
+  .tabstrip,
+  .tabstrip-controls,
+  .framehost,
+  .frame-nudge {
     display: none;
   }
 
   .group,
   .card {
     box-shadow: none;
+  }
+}
+
+/* 13. Tab strip, frame host, focus mode and the nudge bar ================== */
+
+/* The strip and the frame host are siblings of <main>; see the comment in
+   index.html. Nothing in this section may change which element a frame lives
+   in, only how it looks. */
+
+.tabstrip {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  padding-top: var(--sp-2);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+/* A div with role="tab", not a <button>: a tablist may only own tabs, so the
+   close button has to live inside its tab, and an <a>/<button> cannot contain
+   one. Enter and Space are handled in render.js because of it. */
+.tab {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  max-width: 15rem;
+  min-height: var(--target);
+  padding: 0 var(--sp-1) 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-bottom-color: transparent;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+/* Selected state carries colour, weight and a 3px bar, so it does not rely on
+   hue alone in either theme. */
+.tab[aria-selected="true"] {
+  border-color: var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--fg);
+  box-shadow: inset 0 3px 0 var(--accent);
+}
+
+.tab-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.9rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab[aria-selected="true"] .tab-name {
+  font-weight: 600;
+}
+
+.tab .icon {
+  width: 1.3rem;
+  height: 1.3rem;
+  font-size: 0.75rem;
+}
+
+.tab-close {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-faint);
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tab-close:hover {
+  background: var(--bg-hover);
+  color: var(--danger);
+}
+
+.tabstrip-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.tabstrip-count {
+  margin-right: auto;
+  color: var(--fg-faint);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The frame host is the positioned ancestor the frames are absolute against;
+   frames.js sets inset-0 geometry through the classes below and hides the
+   inactive ones with data-active="false". */
+.framehost {
+  position: relative;
+  /* The gutter is margin rather than padding, and the frames are inset: 0
+     with an explicit 100% box: an absolutely positioned *replaced* element
+     with width: auto takes its intrinsic 300x150 and ignores the insets, so
+     the iframe would sit in a corner at default size. */
+  width: calc(100% - 2 * clamp(0.75rem, 2.5vw, 2rem));
+  max-width: var(--max-width);
+  height: var(--frame-h);
+  margin-inline: auto;
+  margin-block: var(--sp-3);
+}
+
+#frame-host .frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow);
+}
+
+#frame-host .frame[data-active="false"] {
+  display: none;
+}
+
+/* Focus mode: chrome goes, the strip stays, and not one frame is touched.
+   The body becomes a flex column so the frame host takes whatever the strip
+   and the nudge bar leave, with no magic numbers. */
+body[data-focus-mode="on"] > .toolbar,
+body[data-focus-mode="on"] > .noscript,
+body[data-focus-mode="on"] > #portal,
+body[data-focus-mode="on"] > .appfoot {
+  display: none;
+}
+
+body[data-focus-mode="on"] {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+body[data-focus-mode="on"] .tabstrip,
+body[data-focus-mode="on"] .tabstrip-controls,
+body[data-focus-mode="on"] .frame-nudge {
+  flex: 0 0 auto;
+}
+
+body[data-focus-mode="on"] .framehost {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  /* The reading-width cap is for the bookmark tree, not for an app that was
+     given the viewport on purpose. */
+  width: 100%;
+  max-width: none;
+  margin: 0;
+}
+
+/* The nudge bar sits in the flow at the bottom edge of the frame area and
+   covers nothing: the host flips its flag on a timer, so it appears over apps
+   that loaded perfectly well, and dimming one of those would be a lie. */
+.frame-nudge {
+  display: grid;
+  gap: var(--sp-2);
+  padding-block: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.nudge-title {
+  font-size: 0.95rem;
+}
+
+.nudge-body,
+.nudge-note {
+  font-size: 0.88rem;
+}
+
+.nudge-hints {
+  display: grid;
+  gap: var(--sp-1);
+  margin: 0;
+  padding-left: 1.1rem;
+  list-style: disc;
+  font-size: 0.85rem;
+}
+
+.nudge-why > summary,
+.nudge-headers > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.nudge-why[open] {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.nudge-headers pre {
+  margin: var(--sp-2) 0;
+  padding: var(--sp-3);
+  overflow-x: auto;
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: 0.78rem;
+}
+
+.nudge-headers .nudge-note {
+  color: inherit;
+}
+
+.nudge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.nudge-actions .btn {
+  text-decoration: none;
+}
+
+/* An embedded item keeps its card as the primary action and gains a separate
+   link out to a browser tab, which has to be a sibling of the card: an <a>
+   inside an <a> is not valid and would not be focusable. */
+.item[data-embed="true"] {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-1);
+}
+
+.item[data-embed="true"] > .card {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.card-extern {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  min-width: var(--target);
+  min-height: var(--target);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+
+.card-extern:hover {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+  color: var(--accent);
+}
+
+/* On a phone a 15rem tab eats the whole strip; narrower tabs let two show at
+   once and the strip still scrolls. */
+@media (max-width: 30rem) {
+  .tab {
+    max-width: 10rem;
+  }
+}
+
+.card-embed {
+  display: inline-block;
+  margin-top: var(--sp-1);
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+}
+
+@container (max-width: 15rem) {
+  .card-embed {
+    display: none;
   }
 }

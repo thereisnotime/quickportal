@@ -10,15 +10,26 @@
  */
 
 import { parseConfig, normalizeConfig, indexItems } from "./config.js";
-import { getStoredTheme, setTheme, setCollapsed, getQuery, setQuery } from "./state.js";
+import {
+  getStoredTheme,
+  setTheme,
+  setCollapsed,
+  getQuery,
+  setQuery,
+  getOpenTabs,
+  setOpenTabs,
+} from "./state.js";
 import { openSet } from "./sets.js";
 import { watchConfig } from "./reload.js";
+import { FRAME_DEFAULT_MAX, createFrameHost, watchFramePolicy } from "./frames.js";
 import {
   renderPortal,
   renderIssues,
   renderNotice,
   applyFilter,
   setCollapsedAll,
+  renderTabStrip,
+  renderFrameNudge,
 } from "./render.js";
 
 const CONFIG_URL = "./config/config.yaml";
@@ -40,6 +51,9 @@ const dom = {
   shortcuts: document.getElementById("shortcuts"),
   live: document.getElementById("live"),
   status: document.getElementById("status"),
+  // Siblings of <main>, never descendants: moving an iframe reloads it.
+  tabStrip: document.getElementById("tab-strip"),
+  frameHost: document.getElementById("frame-host"),
 };
 
 /** Last config that normalised cleanly. Kept so a broken live reload can keep
@@ -56,8 +70,19 @@ let lastText = null;
 const handlers = {
   onOpenSet: handleOpenSet,
   onOpenItem: handleOpenItem,
+  onOpenEmbedded: handleOpenEmbedded,
   onToggleGroup: handleToggleGroup,
 };
+
+/** The frame host, or null when embedding could not be set up at all. */
+let frameHost = null;
+/** Focus mode is view state, not a frame state: it unmounts nothing. */
+let focusMode = false;
+/** The remembered tab set is restored once, after the first clean config. */
+let tabsRestored = false;
+/** Set when a config change had a more specific thing to announce than "the
+ *  config changed", which is a tab closing because its item is gone. */
+let changeAnnounced = false;
 
 /* -------------------------------------------------------------------------
  * Storage access. state.js already swallows storage failures, but a module
@@ -192,6 +217,7 @@ function applyConfigText(text) {
 
   document.title = config.title ? `${config.title} - QuickPortal` : "QuickPortal";
   applyConfigTheme(config.theme);
+  syncFrames();
   startWatching();
   setStatus();
 }
@@ -266,7 +292,10 @@ function onConfigChanged(payload) {
     return;
   }
   applyConfigText(text);
-  announce("The config changed and the page was updated.");
+  // A tab closing because its item disappeared is the more useful sentence,
+  // and the live region only holds one.
+  if (changeAnnounced) changeAnnounced = false;
+  else announce("The config changed and the page was updated.");
 }
 
 function setStatus() {
@@ -366,6 +395,354 @@ function reportSetResult(set, result) {
   announce(`${opened} opened, ${blocked.length} blocked.`);
 }
 
+
+/* -------------------------------------------------------------------------
+ * Embedded apps: the frame host, the strip, focus mode
+ *
+ * Every frame operation goes through frames.js. Nothing here creates, moves,
+ * removes or navigates a frame element, because moving an <iframe> reloads it
+ * and throws away whatever the user had open. The strip is rendered from the
+ * host's onChange list and from nothing else.
+ * ---------------------------------------------------------------------- */
+
+const stripHandlers = {
+  onFocusTab: (id) => safely(() => frameHost.focus(id), null),
+  onCloseTab: closeFrame,
+  onRefreshFocused: refreshFocusedFrame,
+  onRefreshAll: refreshAllFrames,
+  onCloseAll: closeAllFrames,
+  onToggleFocusMode: () => setFocusMode(!focusMode),
+};
+
+/** Apps whose nudge has already been announced, so it is not repeated on
+ *  every list change. Cleared when the host clears the flag. */
+const nudgeAnnounced = new Set();
+
+const nudgeHandlers = {
+  onDismiss: (id) => {
+    // The bar goes away with the button that was just activated, so focus is
+    // moved on purpose rather than dropped on the document.
+    const bar = document.getElementById("qp-frame-nudge");
+    const cameFromBar = Boolean(bar && bar.contains(document.activeElement));
+    safely(() => frameHost.dismissNudge(id), null);
+    if (cameFromBar) focusSelectedTab();
+    announce("Dismissed. The app stays open.");
+  },
+  onOpenExternal: (id) => announce(`Opening ${frameName(id)} in a browser tab.`),
+};
+
+/** The selected tab, or the portal when there is none left to focus. */
+function focusSelectedTab() {
+  const tab = dom.tabStrip && dom.tabStrip.querySelector('.tab[aria-selected="true"]');
+  if (tab) tab.focus({ preventScroll: true });
+  else dom.root.focus({ preventScroll: true });
+}
+
+function initFrames() {
+  if (!dom.tabStrip || !dom.frameHost) return;
+
+  frameHost = safely(
+    () =>
+      createFrameHost(dom.frameHost, {
+        maxFrames: FRAME_DEFAULT_MAX,
+        onChange: onFramesChanged,
+      }),
+    null,
+  );
+  if (!frameHost) return;
+
+  // Our own CSP refusing a frame is the one thing about framing that is
+  // knowable from here, so it is the one thing reported as fact.
+  safely(() => watchFramePolicy(reportFramePolicyBlock), null);
+
+  // Draw the (empty, hidden) strip once so its controls exist before the
+  // first mount, and so a stale strip can never outlive a destroy().
+  onFramesChanged([]);
+}
+
+/** The only thing the strip is rendered from. */
+function onFramesChanged(list) {
+  // The host keeps the item it mounted, which is the right thing for the frame
+  // and the wrong thing for the label: a config change can rename an item, and
+  // the tab should say what the config says now. Swapping the item in the view
+  // model touches no frame.
+  const tabs = (Array.isArray(list) ? list : []).map((tab) => {
+    const current = itemIndex.get(tab.id);
+    return current ? { ...tab, item: current } : tab;
+  });
+  const max = frameHost ? frameHost.max : FRAME_DEFAULT_MAX;
+
+  // Nothing to look at means nothing to focus on: leaving focus mode here is
+  // the only automatic change to it, and it unmounts nothing because there is
+  // nothing left mounted.
+  if (!tabs.length && focusMode) setFocusMode(false);
+
+  renderTabStrip(dom.tabStrip, { tabs, max, focusMode }, stripHandlers);
+
+  // The nudge is offered for the frame the user is actually looking at; the
+  // host keeps the flag per frame, so switching tabs brings it back.
+  const focused = tabs.find((tab) => tab.focused) || null;
+  const nudged = focused && focused.nudged ? focused : null;
+  renderFrameNudge(dom.frameHost, { tab: nudged, docsUrl: docsUrl() }, nudgeHandlers);
+
+  // The bar appears without anyone asking, so it is announced once per app,
+  // in the same conditional wording: it is a timer, not a diagnosis.
+  if (nudged && !nudgeAnnounced.has(nudged.id)) {
+    nudgeAnnounced.add(nudged.id);
+    announce(
+      `If ${frameName(nudged.id)} has not loaded, a way out is offered below the app.`,
+    );
+  }
+  for (const id of Array.from(nudgeAnnounced)) {
+    if (!tabs.some((tab) => tab.id === id && tab.nudged)) nudgeAnnounced.delete(id);
+  }
+
+  // Which apps were open, never anything from inside them. Not persisted
+  // before the remembered set has been restored, or the first render would
+  // overwrite it with nothing.
+  if (tabsRestored) safely(() => setOpenTabs(tabs.map((tab) => tab.id)), null);
+}
+
+/** Frame state that depends on the config: the cap, deleted items, restore. */
+function syncFrames() {
+  if (!frameHost) return;
+
+  const max = Number(config && config.embedding && config.embedding.maxFrames);
+  safely(() => frameHost.setMax(max > 0 ? max : FRAME_DEFAULT_MAX), null);
+
+  // An item can be deleted out from under a mounted frame by a live reload.
+  // The frame survived the re-render untouched; the tab should not survive the
+  // item, and the user is told why rather than left with a tab pointing at
+  // nothing.
+  const closed = safely(() => frameHost.pruneMissing(itemIndex), []) || [];
+  for (const entry of closed) {
+    const name = (entry.item && entry.item.name) || entry.id;
+    renderNotice(dom.root, {
+      kind: "info",
+      id: `frame-gone:${entry.id}`,
+      title: `Closed ${name}`,
+      message: "The item was removed from the config, so its tab no longer pointed at anything.",
+      dismissible: true,
+    });
+  }
+  if (closed.length) {
+    announce(
+      `The config changed. ${closed.length} ${closed.length === 1 ? "tab was" : "tabs were"} ` +
+        "closed: the items are gone from the config.",
+    );
+    changeAnnounced = true;
+  }
+
+  if (!tabsRestored) restoreTabs();
+  if (config && config.embedding && config.embedding.enabled) extendShortcuts();
+}
+
+/**
+ * Reopen the apps that were open last time. The host skips ids that are no
+ * longer in the config, and the stored set is rewritten from what it mounted,
+ * which is how a deleted item's entry is discarded silently.
+ */
+function restoreTabs() {
+  tabsRestored = true;
+  const ids = safely(() => getOpenTabs(), []) || [];
+  if (!ids.length) return;
+
+  const result = safely(() => frameHost.restore(ids, itemIndex), null) || { mounted: [] };
+  const mounted = result.mounted || [];
+  safely(() => setOpenTabs(mounted), null);
+  if (!mounted.length) return;
+  // Restoring is a fresh mount. Saying so is the honest version: nothing of
+  // what was inside those apps survived the page reload.
+  announce(
+    `${mounted.length} ${mounted.length === 1 ? "app was" : "apps were"} reopened from scratch.`,
+  );
+}
+
+/** The primary action of an embedded item: open it inside the portal. */
+function handleOpenEmbedded(item) {
+  if (!item) return;
+  if (!frameHost) {
+    // No host at all: a browser tab is better than nothing happening.
+    openUrl(item.url, item.target);
+    return;
+  }
+
+  const result = safely(() => frameHost.open(item), null) || {};
+  const name = item.name || item.url;
+
+  if (result.evicted) {
+    const evicted = (result.evicted.item && result.evicted.item.name) || result.evicted.id;
+    renderNotice(dom.root, {
+      kind: "info",
+      id: "frames-evicted",
+      title: `Closed ${evicted} to stay within ${frameHost.max} open apps`,
+      message:
+        "The app that had gone longest without being focused was closed, which " +
+        "discards whatever it held. Raise embedding.maxFrames in the config to " +
+        "keep more open at once.",
+      dismissible: true,
+    });
+    announce(`${name} opened. ${evicted} was closed to stay within the limit.`);
+    return;
+  }
+
+  if (result.mounted) announce(`${name} opened in the portal.`);
+  else if (result.focused) announce(`${name} is already open; brought it to the front.`);
+}
+
+function closeFrame(id) {
+  if (!frameHost) return;
+  const name = frameName(id);
+  const closed = safely(() => frameHost.close(id), null);
+  if (closed) announce(`Closed ${name}.`);
+}
+
+/**
+ * Closing several apps at once is destructive in the same way an oversized set
+ * is, so it asks first above one. The host deliberately does not prompt on its
+ * own, so that there is exactly one dialog and it is this one.
+ */
+function closeAllFrames() {
+  if (!frameHost) return;
+  const count = safely(() => frameHost.count(), 0) || 0;
+  if (!count) return;
+
+  // Where focus was before the strip and its controls disappear. Hiding the
+  // element focus is sitting on drops it on the document, so it is moved
+  // deliberately instead.
+  const cameFromStrip = inStrip(document.activeElement);
+
+  const result =
+    safely(() => frameHost.closeAll({ confirm: (message) => window.confirm(message) }), null) || {};
+  if (result.confirmed === false) {
+    announce("Nothing closed.");
+    return;
+  }
+  const closed = (result.closed || []).length;
+  announce(`Closed ${closed} ${closed === 1 ? "app" : "apps"}.`);
+  if (cameFromStrip) dom.root.focus({ preventScroll: true });
+}
+
+/** Whether an element is the strip or one of its controls. */
+function inStrip(element) {
+  if (!element) return false;
+  const controls = document.getElementById("qp-tabstrip-controls");
+  return Boolean(
+    (dom.tabStrip && dom.tabStrip.contains(element)) || (controls && controls.contains(element)),
+  );
+}
+
+function refreshFocusedFrame() {
+  if (!frameHost) return;
+  const id = safely(() => frameHost.focusedId(), null);
+  if (!id) return;
+  const name = frameName(id);
+  safely(() => frameHost.refresh(id), null);
+  // Refresh is a navigation and the only thing allowed to be one; it is never
+  // automatic, because it discards the app's state.
+  announce(`Reloading ${name}.`);
+}
+
+function refreshAllFrames() {
+  if (!frameHost) return;
+  const count = safely(() => frameHost.refreshAll(), 0) || 0;
+  if (!count) return;
+  announce(`Reloading ${count} ${count === 1 ? "app" : "apps"}. Nothing was closed.`);
+}
+
+/**
+ * Focus mode: chrome only. It hides the toolbar, the tree and the footer,
+ * keeps the strip, and unmounts nothing, which is the whole point of it.
+ */
+function setFocusMode(on) {
+  const next = Boolean(on) && frameCount() > 0;
+  if (next === focusMode) return;
+  focusMode = next;
+  if (focusMode) document.body.dataset.focusMode = "on";
+  else delete document.body.dataset.focusMode;
+
+  renderTabStrip(
+    dom.tabStrip,
+    { tabs: frameList(), max: frameHost ? frameHost.max : FRAME_DEFAULT_MAX, focusMode },
+    stripHandlers,
+  );
+  announce(focusMode ? "Focus mode on. Press Escape to leave it." : "Focus mode off.");
+}
+
+/**
+ * Our own Content-Security-Policy refused a frame. Unlike the target's
+ * headers, this one is knowable, so it is stated plainly and names the thing
+ * to change.
+ */
+function reportFramePolicyBlock(report) {
+  const blocked = (report && report.blockedURI) || "an embedded app";
+  renderNotice(dom.root, {
+    kind: "error",
+    id: "frame-policy",
+    title: "This deployment's own policy is blocking embedded apps",
+    message:
+      `The portal's Content-Security-Policy refused to load ${blocked} in a frame. ` +
+      "This is QuickPortal's own header, not the app's: embedding needs two " +
+      "changes, and only the item's `embed: true` has been made.",
+    hints: [
+      "Widen frame-src in the server config ConfigMap to list the origins you embed; it ships as frame-src 'none'.",
+      "frame-ancestors 'none' on the portal itself stays as it is: it is what stops anyone framing the portal.",
+      "Until the policy allows it, the apps still open in a browser tab from the arrow next to each card.",
+    ],
+    dismissible: true,
+  });
+  announce("The portal's own policy is blocking embedded apps.");
+}
+
+function frameList() {
+  if (!frameHost) return [];
+  return safely(() => frameHost.list(), []) || [];
+}
+
+function frameCount() {
+  if (!frameHost) return 0;
+  return safely(() => frameHost.count(), 0) || 0;
+}
+
+function frameName(id) {
+  const entry = frameList().find((tab) => tab.id === id);
+  if (entry && entry.item && entry.item.name) return entry.item.name;
+  const item = itemIndex.get(id);
+  return (item && (item.name || item.url)) || id;
+}
+
+/** An optional documentation link for the nudge bar, when a deployment has one. */
+function docsUrl() {
+  const url = config && config.embedding && config.embedding.docsUrl;
+  return typeof url === "string" && url ? url : null;
+}
+
+/** The strip's keys, added to the shortcuts dialog once embedding is in use. */
+let shortcutsExtended = false;
+
+function extendShortcuts() {
+  if (shortcutsExtended || !dom.shortcuts) return;
+  const list = dom.shortcuts.querySelector(".shortcut-list");
+  if (!list) return;
+  shortcutsExtended = true;
+  const rows = [
+    [["←", "→"], "Move between open app tabs"],
+    [["Delete"], "Close the focused app tab"],
+    [["Esc"], "Leave focus mode"],
+  ];
+  for (const [keys, text] of rows) {
+    const dt = document.createElement("dt");
+    for (const key of keys) {
+      const kbd = document.createElement("kbd");
+      kbd.textContent = key;
+      dt.append(kbd);
+    }
+    const dd = document.createElement("dd");
+    dd.textContent = text;
+    list.append(dt, dd);
+  }
+}
+
 /* -------------------------------------------------------------------------
  * Search
  * ---------------------------------------------------------------------- */
@@ -409,7 +786,8 @@ function paletteEntries() {
       kind: "Bookmark",
       name: item.name || id,
       meta: item.url,
-      run: () => openUrl(item.url, item.target),
+      // An embedded item opens where it is configured to open, from here too.
+      run: () => (item.embed ? handleOpenEmbedded(item) : openUrl(item.url, item.target)),
     });
   }
 
@@ -449,6 +827,30 @@ function paletteEntries() {
       run: () => dom.search.focus({ preventScroll: true }),
     },
   );
+
+  const open = frameCount();
+  if (open) {
+    entries.push(
+      {
+        kind: "Command",
+        name: focusMode ? "Leave focus mode" : "Enter focus mode",
+        meta: "Esc leaves it",
+        run: () => setFocusMode(!focusMode),
+      },
+      {
+        kind: "Command",
+        name: "Refresh all embedded apps",
+        meta: `${open} open`,
+        run: refreshAllFrames,
+      },
+      {
+        kind: "Command",
+        name: "Close all embedded apps",
+        meta: `${open} open`,
+        run: closeAllFrames,
+      },
+    );
+  }
 
   return entries;
 }
@@ -598,6 +1000,13 @@ function bindKeyboard() {
 
     if (dom.palette.open || dom.shortcuts.open) return; // dialogs handle their own keys
 
+    if (event.key === "Escape" && focusMode) {
+      // Focus mode first: the search box is not even on screen while it is on.
+      event.preventDefault();
+      setFocusMode(false);
+      return;
+    }
+
     if (event.key === "Escape") {
       if (dom.search.value) clearSearch(document.activeElement === dom.search);
       else if (document.activeElement === dom.search) dom.search.blur();
@@ -673,6 +1082,7 @@ function init() {
   dom.root.addEventListener("quickportal:retry", () => load());
 
   bindKeyboard();
+  initFrames();
   setStatus();
   load();
 }

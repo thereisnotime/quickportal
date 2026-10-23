@@ -6,6 +6,8 @@ AGENTS.md
 .vscode/
 
 # local scratch
+# CI writes these when it renders the manifests
+rendered*.yaml
 *.local
 *.log
 node_modules/

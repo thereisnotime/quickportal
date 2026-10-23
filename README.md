@@ -16,6 +16,7 @@ a pod restart and without a reload.
 - **YAML or JSON**, validated in the browser, with errors shown on the page
   naming the exact path rather than leaving you a blank screen.
 - Usable at 320px and on a 4K display, light and dark, keyboard driven.
+- **Optionally** open apps inside the page in a tab strip, off by default.
 - No CDN, no telemetry, no analytics, no outbound request you did not configure.
 
 ## Install
@@ -154,6 +155,43 @@ Two things break it, neither of which is a bug in QuickPortal:
   `quickportal-config`.
 
 If the page is not picking up an edit, check those two before anything else.
+
+## Embedding apps in the page
+
+An item can open *inside* the portal, in a tab strip, rather than in a browser
+tab:
+
+```yaml
+items:
+  - name: Dashboards
+    url: https://dashboards.example.com
+    embed: true
+```
+
+Open tabs survive a config edit untouched, so changing your bookmarks does not
+throw away a half-written form or a playing stream. Refresh and close work on
+one tab or all of them, and a focus mode gives the app the whole viewport.
+
+It is **off by default and takes two deliberate steps**, because framing another
+app needs that app's permission:
+
+1. The item sets `embed: true`.
+2. The deployment widens the portal's `frame-src` policy, which ships as
+   `'none'`. With Helm that is `embedding.frameOrigins`; with kustomize it is a
+   patch, and `examples/kustomize/embedding/` is ready to copy.
+
+And the app you are embedding must not refuse to be framed. **QuickPortal cannot
+tell you whether it did**: a page can read nothing about a cross-origin frame,
+not its status, not its headers, and the `load` event fires even on the
+browser's own refusal page. So the portal never accuses the target. A few
+seconds after a frame mounts, a dismissible strip offers to open the app in a
+browser tab and states the headers required. It appears even when the app loaded
+fine, and it never covers it.
+
+[docs/EMBEDDING.md](docs/EMBEDDING.md) has the headers to hand to whoever owns
+the app, the four ways an origin goes subtly wrong, and the third-party cookie
+problem that makes an embedded app on an unrelated domain refuse to stay logged
+in.
 
 ## Why there are no status indicators
 

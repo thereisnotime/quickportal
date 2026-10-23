@@ -5,8 +5,17 @@
  *   renderPortal(root, config, handlers)
  *   renderIssues(root, errors, warnings)
  *   applyFilter(root, query) -> matchCount
+ *   renderTabStrip(strip, model, handlers)   the strip of embedded apps
+ *   renderFrameNudge(frameHost, model, handlers)   the escape hatch
  * Plus two helpers app.js needs: renderNotice(root, notice) to report set
  * results, and setCollapsedAll(root, collapsed) for expand-all/collapse-all.
+ *
+ * The strip is rendered from the frame host's change list and nothing else.
+ * This module never creates, moves or removes a frame element: moving an
+ * <iframe> in the DOM reloads it, which would throw away whatever the user had
+ * open inside an embedded app. #frame-host and its children belong to
+ * frames.js; the only things rendered here are the strip, its controls and the
+ * nudge bar, all of them outside the frame host.
  *
  * Two rules shape the implementation:
  *  - No inline script, style attribute or event handler anywhere: the page is
@@ -198,10 +207,31 @@ function attachListeners(root) {
 
     // Cards are real links: let the browser navigate and honour `target`.
     const card = event.target.closest("a.card");
-    if (card && root.contains(card) && typeof current.onOpenItem === "function") {
-      current.onOpenItem(itemForElement.get(card));
+    if (card && root.contains(card)) {
+      const item = itemForElement.get(card);
+      // An embedded item opens inside the portal on a plain activation, and
+      // in a browser tab on the clicks the browser already means that way
+      // (ctrl/cmd, shift, middle) as well as through its own secondary
+      // action. Keeping the card an <a> is what makes those work for free.
+      if (
+        card.dataset.embed === "true" &&
+        isPlainActivation(event) &&
+        typeof current.onOpenEmbedded === "function"
+      ) {
+        event.preventDefault();
+        current.onOpenEmbedded(item);
+        return;
+      }
+      if (typeof current.onOpenItem === "function") current.onOpenItem(item);
     }
   });
+}
+
+/** A left click with no modifier: everything else is the user asking the
+ *  browser for a tab or a window, and we stay out of the way. */
+function isPlainActivation(event) {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
+  return event.button === 0 || event.button === undefined;
 }
 
 function runAction(root, element) {
@@ -497,7 +527,57 @@ function updateItem(li, item) {
   setAttr(card, "aria-describedby", describedBy.length ? describedBy.join(" ") : null);
 
   syncIcon(card.querySelector(".icon-slot"), item.icon, name, item.url);
+  updateEmbedAffordances(li, card, body, item, name, base, describedBy);
   li.dataset.search = searchHaystack(item);
+}
+
+/**
+ * The two things an embedded item gets that an ordinary one does not: a badge
+ * saying the card opens inside the portal, and a separate link that opens it
+ * in a browser tab. The link is a sibling of the card rather than a child,
+ * because an <a> inside an <a> is not valid and would not be focusable.
+ *
+ * `embed` can be turned off in a live config change, so both are removed again
+ * when it is: an item that stops being embedded has to behave exactly as it
+ * did before the feature existed.
+ */
+function updateEmbedAffordances(li, card, body, item, name, base, describedBy) {
+  const embedded = item.embed === true;
+  li.dataset.embed = embedded ? "true" : "false";
+  if (embedded) card.dataset.embed = "true";
+  else delete card.dataset.embed;
+
+  let badge = body.querySelector(".card-embed");
+  if (embedded) {
+    if (!badge) {
+      badge = make("span", "card-embed", "Opens in the portal");
+      body.append(badge);
+    }
+    badge.id = `${base}-embed`;
+    describedBy.push(badge.id);
+    setAttr(card, "aria-describedby", describedBy.join(" "));
+  } else if (badge) {
+    badge.remove();
+  }
+
+  let extern = li.querySelector(":scope > .card-extern");
+  if (embedded) {
+    if (!extern) {
+      extern = make("a", "card-extern");
+      const glyph = make("span", "card-extern-glyph", "\u2197");
+      glyph.setAttribute("aria-hidden", "true");
+      extern.append(glyph, make("span", "vh"));
+      li.append(extern);
+    }
+    setAttr(extern, "href", item.url || "#");
+    setAttr(extern, "target", "_blank");
+    setAttr(extern, "rel", "noopener noreferrer");
+    // The glyph carries no text, so the accessible name is the hidden span.
+    setText(extern.querySelector(".vh"), `Open ${name} in a browser tab`);
+    extern.dataset.focusKey = `item-extern:${item.id}`;
+  } else if (extern) {
+    extern.remove();
+  }
 }
 
 function searchHaystack(item) {
@@ -864,4 +944,511 @@ function renderFilterSummary(parts, matches, query) {
 function removeNoMatchPanel(parts) {
   const panel = parts.tree.querySelector(":scope > .panel[data-nomatch]");
   if (panel) panel.remove();
+}
+
+/* -------------------------------------------------------------------------
+ * The tab strip, its controls and the nudge bar
+ *
+ * Everything here is drawn from the frame host's change list and nothing else.
+ * No frame element is created, moved, removed or navigated from this module:
+ * see the contract at the top of frames.js.
+ *
+ * Why #tab-strip holds nothing but tabs: a `tablist` may only own `tab`
+ * children, so the close button lives inside its own tab (which is why a tab
+ * is a div with role="tab", as the ARIA practices do for deletable tabs,
+ * rather than a <button> that cannot legally contain one), and the group
+ * controls and the nudge bar are separate siblings created once. They are
+ * siblings of #frame-host rather than children of it, because its children
+ * belong to the frame host.
+ *
+ * The tab's accessible name is pinned to its name span with aria-labelledby,
+ * so neither the close button's label nor the icon can leak into it.
+ * ---------------------------------------------------------------------- */
+
+const STRIP_CONTROLS_ID = "qp-tabstrip-controls";
+const NUDGE_ID = "qp-frame-nudge";
+
+/** Handlers for the strip and its controls, per strip element. */
+const stripHandlers = new WeakMap();
+const nudgeHandlers = new WeakMap();
+const boundStrips = new WeakSet();
+
+/**
+ * Where focus goes after the strip next renders: a tab id, or "portal" when
+ * the strip is about to vanish from under the keyboard. Closing a tab must not
+ * drop focus on the document.
+ */
+let pendingTabFocus = null;
+
+/**
+ * Render the strip of mounted apps.
+ *
+ * @param {Element} strip  #tab-strip, the tablist
+ * @param {object} model   {tabs, max, focusMode} - `tabs` is host.list()
+ * @param {object} handlers
+ *   onFocusTab(id), onCloseTab(id), onRefreshFocused(), onRefreshAll(),
+ *   onCloseAll(), onToggleFocusMode()
+ */
+export function renderTabStrip(strip, model, handlers) {
+  if (!strip) return;
+  stripHandlers.set(strip, handlers || {});
+  attachStripListeners(strip);
+
+  const tabs = Array.isArray(model && model.tabs) ? model.tabs : [];
+  const max = Number(model && model.max) > 0 ? Number(model.max) : tabs.length;
+  const focusMode = Boolean(model && model.focusMode);
+  const controls = ensureStripControls(strip);
+  const empty = tabs.length === 0;
+
+  reconcile(
+    strip,
+    tabs.map((tab, index) => ({
+      key: `f:${tab.id}`,
+      tab,
+      index: index + 1,
+      total: tabs.length,
+    })),
+    buildTab,
+    (node, spec) => updateTab(node, spec.tab, spec.index, spec.total),
+  );
+
+  // Roving tabindex: exactly one tab is reachable with Tab, and the arrow keys
+  // move between them from there. If the host reports no focused frame, the
+  // first tab takes the stop so the strip never becomes unreachable.
+  if (!empty && !tabs.some((tab) => tab.focused)) {
+    const first = strip.querySelector(":scope > .tab");
+    if (first) first.tabIndex = 0;
+  }
+
+  updateStripControls(controls, tabs, max, focusMode);
+
+  // Hidden entirely when nothing is mounted: an empty strip is chrome that
+  // explains nothing.
+  setHidden(strip, empty);
+  setHidden(controls, empty);
+
+  applyPendingTabFocus(strip);
+}
+
+function buildTab() {
+  const tab = make("div", "tab");
+  tab.setAttribute("role", "tab");
+  tab.append(make("span", "icon-slot"), make("span", "tab-name"));
+
+  const close = make("button", "tab-close");
+  close.type = "button";
+  // Not a tab stop of its own: a tablist with two stops per tab is miserable
+  // to walk. The keyboard path is Delete or Backspace on the tab itself, which
+  // is announced through aria-keyshortcuts.
+  close.tabIndex = -1;
+  close.dataset.stripAction = "close-tab";
+  const glyph = make("span", "tab-close-glyph", "×");
+  glyph.setAttribute("aria-hidden", "true");
+  close.append(glyph);
+  tab.append(close);
+  return tab;
+}
+
+function updateTab(tab, entry, index, total) {
+  const item = entry.item || {};
+  const name = item.name || item.id || entry.id;
+  const base = `qp-tab-${domSafe(entry.id)}`;
+
+  tab.dataset.tabId = entry.id;
+  tab.dataset.focusKey = `tab:${entry.id}`;
+  tab.id = base;
+
+  const nameNode = tab.querySelector(".tab-name");
+  nameNode.id = `${base}-name`;
+  setText(nameNode, name);
+
+  setAttr(tab, "aria-labelledby", nameNode.id);
+  setAttr(tab, "aria-selected", entry.focused ? "true" : "false");
+  // Position and size are how the strip conveys "the third of four" without
+  // padding the accessible name with a count.
+  setAttr(tab, "aria-posinset", String(index));
+  setAttr(tab, "aria-setsize", String(total));
+  setAttr(tab, "aria-keyshortcuts", "Delete");
+  tab.tabIndex = entry.focused ? 0 : -1;
+
+  const close = tab.querySelector(".tab-close");
+  setAttr(close, "aria-label", `Close ${name}`);
+  setAttr(close, "title", `Close ${name}`);
+
+  syncIcon(tab.querySelector(".icon-slot"), item.icon, name, item.url);
+}
+
+/**
+ * The group controls, as a sibling of the strip rather than inside it, so the
+ * tablist keeps owning tabs and only tabs.
+ */
+function ensureStripControls(strip) {
+  let controls = strip.__quickportalControls;
+  if (controls && controls.isConnected) return controls;
+
+  controls = strip.ownerDocument.getElementById(STRIP_CONTROLS_ID);
+  if (!controls) {
+    controls = make("div", "shell tabstrip-controls");
+    controls.id = STRIP_CONTROLS_ID;
+    const count = make("p", "tabstrip-count");
+    // A live region: the mounted count changes without the user asking.
+    count.setAttribute("role", "status");
+    controls.append(
+      count,
+      controlButton("refresh-focused", "↻", "Refresh"),
+      controlButton("refresh-all", "⟳", "Refresh all"),
+      controlButton("close-all", "×", "Close all"),
+      controlButton("focus-mode", "⛶", "Focus mode"),
+    );
+    controls.hidden = true;
+    strip.after(controls);
+
+    controls.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-strip-action]");
+      if (!button) return;
+      const current = stripHandlers.get(strip) || {};
+      const action = button.dataset.stripAction;
+      if (action === "refresh-focused") call(current.onRefreshFocused);
+      else if (action === "refresh-all") call(current.onRefreshAll);
+      else if (action === "close-all") call(current.onCloseAll);
+      else if (action === "focus-mode") call(current.onToggleFocusMode);
+    });
+  }
+
+  strip.__quickportalControls = controls;
+  return controls;
+}
+
+function controlButton(action, glyph, label) {
+  const button = make("button", "btn btn-quiet");
+  button.type = "button";
+  button.dataset.stripAction = action;
+  const icon = make("span", null, glyph);
+  icon.setAttribute("aria-hidden", "true");
+  // The label is the first thing the narrow toolbar drops, so every one of
+  // these also carries an aria-label; updateStripControls keeps them in step.
+  button.append(icon, make("span", "btn-label", label));
+  return button;
+}
+
+function updateStripControls(controls, tabs, max, focusMode) {
+  const count = tabs.length;
+  // The count can legitimately sit above the cap: lowering the cap closes
+  // nothing, so it drains one open at a time. Say so rather than pretend.
+  const over = count > max ? ", over the limit" : "";
+  setText(
+    controls.querySelector(".tabstrip-count"),
+    count ? `${count} of ${max} open${over}` : "",
+  );
+
+  const focused = tabs.find((tab) => tab.focused) || null;
+  const focusedName = focused ? focused.item.name || focused.id : null;
+
+  labelControl(controls, "refresh-focused", "Refresh", focusedName ? `Reload ${focusedName}` : "Reload this app");
+  labelControl(controls, "refresh-all", "Refresh all", `Reload all ${count} open apps`);
+  labelControl(controls, "close-all", "Close all", `Close all ${count} open apps`);
+  labelControl(
+    controls,
+    "focus-mode",
+    focusMode ? "Leave focus mode" : "Focus mode",
+    focusMode ? "Leave focus mode" : "Focus mode: give the viewport to the open app",
+  );
+
+  const focusButton = controls.querySelector('[data-strip-action="focus-mode"]');
+  setAttr(focusButton, "aria-pressed", focusMode ? "true" : "false");
+}
+
+function labelControl(controls, action, label, ariaLabel) {
+  const button = controls.querySelector(`[data-strip-action="${action}"]`);
+  if (!button) return;
+  setText(button.querySelector(".btn-label"), label);
+  setAttr(button, "aria-label", ariaLabel);
+}
+
+function attachStripListeners(strip) {
+  if (boundStrips.has(strip)) return;
+  boundStrips.add(strip);
+
+  strip.addEventListener("click", (event) => {
+    const current = stripHandlers.get(strip) || {};
+    const close = event.target.closest(".tab-close");
+    if (close) {
+      const owner = close.closest(".tab");
+      if (owner) requestCloseTab(strip, owner.dataset.tabId, current);
+      return;
+    }
+    const tab = event.target.closest(".tab");
+    if (tab && typeof current.onFocusTab === "function") current.onFocusTab(tab.dataset.tabId);
+  });
+
+  strip.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented) return;
+    const current = stripHandlers.get(strip) || {};
+    const tab = event.target.closest(".tab");
+    if (!tab) return;
+
+    switch (event.key) {
+      case "ArrowRight":
+      case "ArrowDown":
+        event.preventDefault();
+        moveTabFocus(strip, tab, 1, current);
+        break;
+      case "ArrowLeft":
+      case "ArrowUp":
+        event.preventDefault();
+        moveTabFocus(strip, tab, -1, current);
+        break;
+      case "Home":
+        event.preventDefault();
+        activateTabAt(strip, 0, current);
+        break;
+      case "End":
+        event.preventDefault();
+        activateTabAt(strip, -1, current);
+        break;
+      case "Delete":
+      case "Backspace":
+        event.preventDefault();
+        requestCloseTab(strip, tab.dataset.tabId, current);
+        break;
+      case "Enter":
+      case " ":
+        // role="tab" on a div means Enter and Space are ours to honour.
+        event.preventDefault();
+        if (typeof current.onFocusTab === "function") current.onFocusTab(tab.dataset.tabId);
+        break;
+      default:
+        break;
+    }
+  });
+}
+
+function stripTabs(strip) {
+  return Array.from(strip.querySelectorAll(":scope > .tab"));
+}
+
+function moveTabFocus(strip, from, delta, handlers) {
+  const tabs = stripTabs(strip);
+  if (tabs.length < 2) return;
+  const index = tabs.indexOf(from);
+  activateTab(tabs[(index + delta + tabs.length) % tabs.length], handlers);
+}
+
+function activateTabAt(strip, position, handlers) {
+  const tabs = stripTabs(strip);
+  if (!tabs.length) return;
+  activateTab(position === -1 ? tabs[tabs.length - 1] : tabs[position], handlers);
+}
+
+/**
+ * Automatic activation: arrowing onto a tab shows its frame. Showing a frame is
+ * a visibility change in the host, never a navigation, so nothing reloads.
+ */
+function activateTab(tab, handlers) {
+  if (!tab) return;
+  const id = tab.dataset.tabId;
+  if (typeof handlers.onFocusTab === "function") handlers.onFocusTab(id);
+  // The re-render reuses the same node for the same id, but check anyway
+  // rather than focus a node that was replaced underneath us.
+  const again = tab.isConnected
+    ? tab
+    : tab.ownerDocument.querySelector(`.tab[data-tab-id="${CSS.escape(id)}"]`);
+  if (again) again.focus({ preventScroll: true });
+}
+
+/**
+ * Close a tab and decide where focus lands before the strip changes under us:
+ * the tab to the right, else the one to the left, else the portal. The host
+ * calls back synchronously, so applyPendingTabFocus runs inside this call.
+ */
+function requestCloseTab(strip, id, handlers) {
+  if (!id || typeof handlers.onCloseTab !== "function") return;
+  const ids = stripTabs(strip).map((tab) => tab.dataset.tabId);
+  const index = ids.indexOf(id);
+  const neighbour = ids[index + 1] || ids[index - 1] || null;
+  const hadFocus = strip.contains(strip.ownerDocument.activeElement);
+  pendingTabFocus = hadFocus ? neighbour || "portal" : null;
+  handlers.onCloseTab(id);
+  // If the host closed nothing, the request is simply dropped.
+  pendingTabFocus = null;
+}
+
+function applyPendingTabFocus(strip) {
+  const wanted = pendingTabFocus;
+  pendingTabFocus = null;
+  if (!wanted) return;
+  if (wanted === "portal") {
+    const portal = strip.ownerDocument.getElementById("portal");
+    if (portal) portal.focus({ preventScroll: true });
+    return;
+  }
+  const tab = strip.querySelector(`:scope > .tab[data-tab-id="${CSS.escape(wanted)}"]`);
+  if (tab) tab.focus({ preventScroll: true });
+}
+
+function call(fn) {
+  if (typeof fn === "function") fn();
+}
+
+/* -------------------------------------------------------------------------
+ * The nudge bar
+ *
+ * The host marks a frame `nudged` a few seconds after mounting it. That is a
+ * timer, not a diagnosis: nothing in this app can see whether a cross-origin
+ * frame loaded, was refused, is slow or is down, and the browser's own refusal
+ * page fires `load` just like a working app. So the bar appears over apps that
+ * are working perfectly well, and therefore:
+ *
+ *  - it covers and dims nothing, it sits in the flow at the bottom edge of the
+ *    frame area and the frame area shrinks by its height,
+ *  - every cause is conditional ("if this app has not loaded"), never a
+ *    statement that the target refused framing,
+ *  - it is dismissible per app.
+ * ---------------------------------------------------------------------- */
+
+const NUDGE_HINTS = [
+  "The app may not permit framing: X-Frame-Options, or a Content-Security-Policy whose frame-ancestors does not list this portal's origin.",
+  "It may be logging you out invisibly, because a session cookie without SameSite=None; Secure is not sent to a frame on another site.",
+  "It may simply be slow, erroring or unreachable, which looks exactly the same from here.",
+];
+
+/**
+ * Render the escape hatch for the focused frame, or hide it.
+ *
+ * @param {Element} frameHost  #frame-host; the bar is inserted after it
+ * @param {object} model   {tab, docsUrl} - `tab` is the entry to nudge, or null
+ * @param {object} handlers  onDismiss(id), onOpenExternal(id)
+ */
+export function renderFrameNudge(frameHost, model, handlers) {
+  if (!frameHost) return;
+  const bar = ensureNudgeBar(frameHost);
+  nudgeHandlers.set(bar, handlers || {});
+
+  const tab = (model && model.tab) || null;
+  if (!tab) {
+    delete bar.dataset.tabId;
+    setHidden(bar, true);
+    return;
+  }
+
+  const item = tab.item || {};
+  const name = item.name || tab.id;
+  bar.dataset.tabId = tab.id;
+
+  setText(
+    bar.querySelector(".nudge-title"),
+    `If ${name} has not loaded, here is the way out`,
+  );
+  setText(
+    bar.querySelector(".nudge-body"),
+    "QuickPortal cannot see inside a frame from another origin, so it does not " +
+      "know whether this app is showing you something or not. If the area above " +
+      "is blank, any of these could be why:",
+  );
+
+  const open = bar.querySelector(".nudge-open");
+  setAttr(open, "href", item.url || "#");
+  setText(open.querySelector(".nudge-open-label"), `Open ${name} in a browser tab`);
+
+  const docs = bar.querySelector(".nudge-docs");
+  const docsUrl = model && model.docsUrl;
+  setAttr(docs, "href", docsUrl || null);
+  setHidden(docs, !docsUrl);
+
+  setHidden(bar, false);
+}
+
+/**
+ * The header requirements, spelled out in the page.
+ *
+ * The repository's documentation is not part of the served tree (the served
+ * files are a flat ConfigMap), and hardcoding a documentation host into a
+ * static page would be a guess about someone else's deployment. So the exact
+ * headers are here, collapsed, and the model's optional `docsUrl` adds a link
+ * when a deployment has one.
+ */
+function buildHeaderHelp() {
+  const details = make("details", "nudge-headers");
+  details.append(make("summary", null, "What the app has to send to be frameable"));
+  details.append(
+    make(
+      "p",
+      "nudge-note",
+      "On the embedded app, not on QuickPortal. Replace the origin with the one " +
+        "this portal is served from.",
+    ),
+    make(
+      "pre",
+      null,
+      [
+        "Content-Security-Policy: frame-ancestors https://portal.example.com",
+        "",
+        "# and no X-Frame-Options: DENY / SAMEORIGIN header,",
+        "# which older browsers honour instead of frame-ancestors.",
+      ].join("\n"),
+    ),
+    make(
+      "p",
+      "nudge-note",
+      "QuickPortal's own policy has to allow it too: frame-src in the server " +
+        "config must list the app's origin, and it ships as 'none'.",
+    ),
+  );
+  return details;
+}
+
+function ensureNudgeBar(frameHost) {
+  let bar = frameHost.__quickportalNudge;
+  if (bar && bar.isConnected) return bar;
+
+  bar = frameHost.ownerDocument.getElementById(NUDGE_ID);
+  if (!bar) {
+    bar = make("div", "shell frame-nudge");
+    bar.id = NUDGE_ID;
+    bar.setAttribute("role", "region");
+
+    const title = make("h2", "nudge-title");
+    title.id = `${NUDGE_ID}-title`;
+    bar.setAttribute("aria-labelledby", title.id);
+
+    const hints = make("ul", "nudge-hints");
+    for (const hint of NUDGE_HINTS) hints.append(make("li", null, hint));
+
+    const actions = make("div", "nudge-actions");
+    const open = make("a", "btn btn-accent nudge-open");
+    open.target = "_blank";
+    open.rel = "noopener noreferrer";
+    open.append(make("span", "nudge-open-label"));
+    const docs = make("a", "btn nudge-docs", "Read the documentation");
+    docs.target = "_blank";
+    docs.rel = "noopener noreferrer";
+    const dismiss = make("button", "btn btn-quiet", "Dismiss");
+    dismiss.type = "button";
+    dismiss.dataset.nudgeAction = "dismiss";
+    actions.append(open, docs, dismiss);
+
+    // Two rows by default. The bar appears over apps that loaded perfectly
+    // well, so the reasoning is folded away and only the way out is in sight.
+    const why = make("details", "nudge-why");
+    why.append(make("summary", null, "Why a frame can stay blank"));
+    why.append(make("p", "nudge-body"), hints, buildHeaderHelp());
+    bar.append(title, actions, why);
+    bar.hidden = true;
+    frameHost.after(bar);
+
+    bar.addEventListener("click", (event) => {
+      const current = nudgeHandlers.get(bar) || {};
+      const id = bar.dataset.tabId;
+      if (event.target.closest("[data-nudge-action='dismiss']")) {
+        if (typeof current.onDismiss === "function") current.onDismiss(id);
+        return;
+      }
+      if (event.target.closest(".nudge-open") && typeof current.onOpenExternal === "function") {
+        current.onOpenExternal(id);
+      }
+    });
+  }
+
+  frameHost.__quickportalNudge = bar;
+  return bar;
 }

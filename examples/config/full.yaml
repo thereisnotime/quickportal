@@ -21,6 +21,14 @@ reload:
                                  # effort: kubelet itself can take about a
                                  # minute to project a changed ConfigMap.
 
+embedding:                       # optional; only matters for embedded items
+  maxFrames: 4                   # 1-16, how many apps may be open inside the
+                                 # portal at once (default: 4). Opening another
+                                 # closes the least recently focused one.
+  docsUrl: https://runbook.example.org/embedding
+                                 # optional; points the "why can a frame stay
+                                 # blank" help at your own runbook
+
 groups:
   - id: media                    # optional; derived by slugifying the name
                                  # within its parent path when absent. An
@@ -77,6 +85,24 @@ groups:
         description: Application delivery
         icon: auto
         tags: [gitops]
+      - id: dashboards
+        name: Dashboards
+        url: https://dashboards.example.com
+        description: Opens inside the portal rather than in a browser tab
+        icon: auto
+        embed: true              # off by default. This ALSO needs the
+                                 # deployment to permit framing this origin,
+                                 # and the app itself to permit being framed:
+                                 # see docs/EMBEDDING.md
+        allow:                   # browser permissions handed to the framed app
+          - fullscreen           # autoplay | clipboard-read | clipboard-write
+          - clipboard-write      # encrypted-media | fullscreen
+                                 # picture-in-picture
+                                 # Camera, microphone, geolocation and screen
+                                 # capture are deliberately not delegable.
+        sandbox: []              # opt-in standard allow-* tokens. Empty means
+                                 # no sandbox attribute at all, which is NOT
+                                 # the same as HTML's sandbox=""
 
 sets:
   - id: morning                  # optional, like any other id

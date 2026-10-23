@@ -24,7 +24,7 @@ An embedded item SHALL always offer opening in a browser tab as well, because fr
 
 #### Scenario: Nothing useful has appeared
 - **WHEN** a mounted frame has been up for several seconds
-- **THEN** a dismissible, non-blocking strip at an edge of the frame area offers opening in a browser tab and links to the documented header requirements, worded conditionally rather than as a diagnosis
+- **THEN** a dismissible, non-blocking strip at an edge of the frame area offers opening in a browser tab and states the header requirements inline, worded conditionally rather than as a diagnosis, linking to documentation only when the deployment has supplied a URL
 
 #### Scenario: A working app is never obscured
 - **WHEN** the frame actually loaded and the user is using the embedded app

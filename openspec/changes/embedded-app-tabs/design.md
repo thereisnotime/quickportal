@@ -44,7 +44,12 @@ items:
 
 A frame refused by `X-Frame-Options` or by the target's `frame-ancestors` renders the browser's own error content. The parent document gets a `load` event in some browsers and nothing in others, cannot read the frame's status, cannot read its document, and cannot distinguish refusal from a slow app or a 500. Every "detect a blocked iframe" technique is a guess, and a wrong guess here is worse than no guess: telling someone their app refused framing when it was actually down sends them to edit headers for no reason.
 
-So: no detection. After a few seconds a mounted frame gets a dismissible strip at the edge of the frame area offering "open in a browser tab" and a link to the documented header requirements, worded conditionally.
+So: no detection. After a few seconds a mounted frame gets a dismissible strip at the edge of the frame area offering "open in a browser tab" and stating the header requirements inline, worded conditionally.
+
+The headers are stated *in* the bar rather than linked, because the served tree
+is a flat ConfigMap with no documentation in it and there is no host to
+hardcode. `embedding.docsUrl` lets a deployment point at its own runbook, and
+the link is simply absent when it does not.
 
 It has to be a strip rather than anything covering the frame, and this is not a styling preference. The only event available is the frame's `load`, which fires on the browser's own refusal page as well as on a real page, so using it to decide "something appeared" would suppress the escape hatch in exactly the refused case it exists for. The strip therefore appears for apps that loaded perfectly well, and anything that covered or dimmed a working app would make the feature worse than not having it.
 

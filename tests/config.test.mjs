@@ -982,3 +982,57 @@ test("the recognised token sets are the only place the vocabulary is written dow
   assert.equal(Object.isFrozen(ALLOW_TOKENS), true);
   assert.equal(Object.isFrozen(SANDBOX_TOKENS), true);
 });
+
+// --- embedding.docsUrl ------------------------------------------------------
+//
+// The page cannot link to this repository's docs: the served tree is a flat
+// ConfigMap and there is no host to hardcode. A deployment may point the
+// escape-hatch bar at its own runbook instead.
+
+test("embedding.docsUrl is accepted and surfaced on the config", () => {
+  const { config, errors, warnings } = loadConfig(`version: 1
+embedding:
+  docsUrl: https://runbook.example.org/embedding
+groups:
+  - name: A
+    items:
+      - name: B
+        url: https://b.example.com
+        embed: true
+`);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  assert.equal(config.embedding.docsUrl, "https://runbook.example.org/embedding");
+});
+
+test("a docsUrl that is not a URL warns and shows no link", () => {
+  const { config, errors, warnings } = loadConfig(`version: 1
+embedding:
+  docsUrl: "not a url"
+groups:
+  - name: A
+    items:
+      - name: B
+        url: https://b.example.com
+`);
+  assert.deepEqual(errors, []);
+  assert.match(messageFor(warnings, "embedding.docsUrl"), /expected a URL/);
+  assert.equal(config.embedding.docsUrl, undefined);
+});
+
+test("docsUrl survives alongside a bad maxFrames", () => {
+  // maxFrames validation returns early; docsUrl must be read before that.
+  const { config, warnings } = loadConfig(`version: 1
+embedding:
+  maxFrames: 0
+  docsUrl: https://runbook.example.org/embedding
+groups:
+  - name: A
+    items:
+      - name: B
+        url: https://b.example.com
+`);
+  assert.match(messageFor(warnings, "embedding.maxFrames"), /between 1 and/);
+  assert.equal(config.embedding.docsUrl, "https://runbook.example.org/embedding");
+  assert.equal(config.embedding.maxFrames, 4);
+});
