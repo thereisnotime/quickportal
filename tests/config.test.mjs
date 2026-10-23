@@ -642,3 +642,81 @@ test("resolveTargets tolerates a set with no targets and an empty config", () =>
   assert.deepEqual(resolveTargets({}, { groups: [] }), { items: [], unresolved: [] });
   assert.deepEqual(resolveTargets({ targets: ["x"] }, {}), { items: [], unresolved: ["x"] });
 });
+
+// --- Regression -------------------------------------------------------------
+//
+// Derived ids used to accumulate the parent chain twice from depth three on, so
+// a depth-four item came out as media/media/downloads/media/.../deeper. These
+// ids are what sets reference and what collapse state is keyed by, so they are
+// user-facing and a rename of this shape is a breaking change.
+
+test("derived ids qualify each level exactly once, to the depth cap", () => {
+  const yaml = `version: 1
+groups:
+  - name: Media
+    items:
+      - name: Library
+        url: https://library.example.com
+    groups:
+      - name: Downloads
+        items:
+          - name: Queue
+            url: https://queue.example.com
+        groups:
+          - name: Deeper
+            items:
+              - name: Thing
+                url: https://thing.example.com
+            groups:
+              - name: Deepest
+                items:
+                  - name: Last
+                    url: https://last.example.com
+`;
+  const { config, errors } = normalizeConfig(parseConfig(yaml).raw);
+  assert.deepEqual(errors, []);
+
+  const ids = [];
+  const walk = (groups) => {
+    for (const group of groups) {
+      ids.push(group.id);
+      for (const item of group.items) ids.push(item.id);
+      walk(group.groups);
+    }
+  };
+  walk(config.groups);
+
+  assert.deepEqual(ids, [
+    "media",
+    "media/library",
+    "media/downloads",
+    "media/downloads/queue",
+    "media/downloads/deeper",
+    "media/downloads/deeper/thing",
+    "media/downloads/deeper/deepest",
+    "media/downloads/deeper/deepest/last",
+  ]);
+  for (const id of ids) {
+    assert.equal(/(^|\/)([^/]+)\/\2(\/|$)/.test(id), false, `${id} repeats a segment`);
+  }
+});
+
+test("a sibling name under two parents does not collide", () => {
+  const yaml = `version: 1
+groups:
+  - name: One
+    items:
+      - name: Status
+        url: https://one.example.com/status
+  - name: Two
+    items:
+      - name: Status
+        url: https://two.example.com/status
+`;
+  const { config, errors } = normalizeConfig(parseConfig(yaml).raw);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(
+    [config.groups[0].items[0].id, config.groups[1].items[0].id],
+    ["one/status", "two/status"],
+  );
+});

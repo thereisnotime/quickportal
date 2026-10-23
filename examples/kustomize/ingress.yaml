@@ -1,0 +1,35 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: quickportal
+  labels:
+    app.kubernetes.io/name: quickportal
+  annotations:
+    # (no controller-specific annotations are needed to serve the portal)
+    #
+    # The portal has no authentication of its own, by design. If it is reachable
+    # from anywhere you do not control, put an auth proxy in front of it here.
+    # Example, for the ingress-nginx controller:
+    #   nginx.ingress.kubernetes.io/auth-url: https://auth.example.com/verify
+    #   nginx.ingress.kubernetes.io/auth-signin: https://auth.example.com/start
+    #
+    # Do not add headers here that relax frame-ancestors: the app is not meant
+    # to be framed, and embedding other apps in it is explicitly out of scope.
+spec:
+  # Replace with the class your cluster actually has.
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - portal.example.com
+      secretName: quickportal-tls
+  rules:
+    - host: portal.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: quickportal
+                port:
+                  name: http

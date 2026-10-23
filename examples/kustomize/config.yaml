@@ -1,0 +1,12 @@
+# Your config goes here. This sample is deliberately tiny; see examples/config
+# for a minimal one, a nested one with sets, and one using every field.
+version: 1
+title: Overlay example
+groups:
+  - name: Tools
+    items:
+      - name: Dashboards
+        url: https://grafana.example.com
+        icon: auto
+      - name: Status
+        url: https://status.example.org

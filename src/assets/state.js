@@ -68,6 +68,23 @@ export function getTheme(storage) {
 }
 
 /**
+ * The remembered theme, or null when the viewer has never chosen one.
+ *
+ * getTheme() cannot answer this: it returns "auto" both for a remembered
+ * "auto" and for nothing remembered at all, so a caller could not tell a
+ * deliberate choice of "auto" from an absent one, and a config's own `theme`
+ * would either always lose or always win. Anything that has to respect "the
+ * viewer's choice beats the config" wants this one.
+ *
+ * @param {object} [storage]
+ * @returns {string|null}
+ */
+export function getStoredTheme(storage) {
+  const value = readRaw(KEY_THEME, storage);
+  return THEMES.includes(value) ? value : null;
+}
+
+/**
  * @param {string} theme one of auto, light, dark
  * @param {object} [storage]
  * @returns {boolean} whether it was remembered.

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en" data-theme="auto" data-density="comfortable">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="description" content="A static, config-driven start page for self-hosted bookmarks." />
+    <title>QuickPortal</title>
+    <link rel="stylesheet" href="./app.css" />
+    <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAI0lEQVR42mPQir7+nxLMMMwMIBbQzoBRL1wnykbaGjBC8wIAlYiv09wvFDUAAAAASUVORK5CYII=" />
+    <!-- type=module is deferred, so the DOM below exists by the time it runs. -->
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#portal">Skip to bookmarks</a>
+
+    <header class="toolbar">
+      <div class="shell toolbar-inner">
+        <div class="search" role="search">
+          <label class="vh" for="search">Search bookmarks</label>
+          <span class="search-icon" aria-hidden="true">&#9906;</span>
+          <input
+            id="search"
+            type="search"
+            name="search"
+            placeholder="Search bookmarks"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            enterkeyhint="search"
+          />
+          <button id="search-clear" class="btn btn-quiet search-clear" type="button" hidden>
+            <span aria-hidden="true">&times;</span>
+            <span class="vh">Clear search</span>
+          </button>
+        </div>
+
+        <div class="toolbar-actions">
+          <button id="palette-open" class="btn" type="button">
+            <span aria-hidden="true">&#9776;</span>
+            <span class="btn-label">Commands</span>
+            <kbd class="kbd-inline" aria-hidden="true">Ctrl K</kbd>
+          </button>
+          <button id="theme-toggle" class="btn" type="button">
+            <span class="theme-glyph" aria-hidden="true">&#9681;</span>
+            <span class="btn-label" id="theme-label">Theme: auto</span>
+          </button>
+          <button id="reload-now" class="btn" type="button">
+            <span aria-hidden="true">&#8635;</span>
+            <span class="btn-label">Reload config</span>
+          </button>
+          <button id="shortcuts-open" class="btn btn-quiet" type="button">
+            <span aria-hidden="true">?</span>
+            <span class="vh">Keyboard shortcuts</span>
+          </button>
+        </div>
+      </div>
+
+      <p class="shell hints">
+        Press <kbd>/</kbd> to search, <kbd>Ctrl</kbd>&#8239;<kbd>K</kbd> for the command palette,
+        <kbd>?</kbd> for all shortcuts.
+      </p>
+    </header>
+
+    <noscript>
+      <p class="noscript">
+        QuickPortal renders its bookmarks in the browser from
+        <code>./config/config.yaml</code>, so it needs JavaScript enabled. Nothing is loaded from a
+        third party.
+      </p>
+    </noscript>
+
+    <main id="portal" class="shell portal" tabindex="-1"></main>
+
+    <!-- Announcements: search result counts, set results, reload outcomes. -->
+    <p id="live" class="vh" role="status" aria-live="polite"></p>
+
+    <footer class="shell appfoot">
+      <p id="status" class="status"></p>
+    </footer>
+
+    <dialog id="palette" class="dialog palette" aria-labelledby="palette-title">
+      <h2 class="vh" id="palette-title">Command palette</h2>
+      <div class="palette-field">
+        <label class="vh" for="palette-input">Search commands and bookmarks</label>
+        <input
+          id="palette-input"
+          type="text"
+          placeholder="Jump to a bookmark, set or command&hellip;"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="palette-list"
+          aria-autocomplete="list"
+        />
+      </div>
+      <ul id="palette-list" class="palette-list" role="listbox" aria-label="Results"></ul>
+      <p id="palette-empty" class="palette-empty" hidden>No match.</p>
+      <p class="palette-foot">
+        <kbd>&uarr;</kbd><kbd>&darr;</kbd> to move, <kbd>Enter</kbd> to open,
+        <kbd>Esc</kbd> to close.
+      </p>
+    </dialog>
+
+    <dialog id="shortcuts" class="dialog shortcuts" aria-labelledby="shortcuts-title">
+      <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+      <dl class="shortcut-list">
+        <dt><kbd>/</kbd></dt>
+        <dd>Focus the search box</dd>
+        <dt><kbd>Ctrl</kbd>&#8239;<kbd>K</kbd></dt>
+        <dd>Open the command palette (<kbd>&#8984;</kbd>&#8239;<kbd>K</kbd> on macOS)</dd>
+        <dt><kbd>Esc</kbd></dt>
+        <dd>Clear the search, or close a dialog</dd>
+        <dt><kbd>Enter</kbd></dt>
+        <dd>Open the focused bookmark or set</dd>
+        <dt><kbd>Space</kbd></dt>
+        <dd>Collapse or expand the focused group</dd>
+        <dt><kbd>?</kbd></dt>
+        <dd>Show this list</dd>
+      </dl>
+      <button class="btn" type="button" data-close-dialog>Close</button>
+    </dialog>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+{{/*
+The application itself, as a ConfigMap.
+
+Keys are basenames, because a ConfigMap key cannot contain a slash. That is why
+the served tree is flat (/app.js, not /assets/app.js) and why basenames under
+src/ have to stay unique. files/app is a symlink to the repository's src/, so
+the chart serves exactly the same bytes as the kustomize base.
+
+A change here rolls the pod via the checksum/app annotation on the Deployment,
+which is the chart's equivalent of kustomize's content-hashed ConfigMap name.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "quickportal.fullname" . }}-app
+  labels:
+    {{- include "quickportal.labels" . | nindent 4 }}
+data:
+{{- range $path, $bytes := .Files.Glob "files/app/**" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}

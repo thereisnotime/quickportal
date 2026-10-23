@@ -1,0 +1,95 @@
+# Default QuickPortal config.
+#
+# This ships with the base so that a fresh install renders a real page instead
+# of an empty screen. Everything in it points at reserved placeholder domains.
+#
+# Replace it with your own. With kustomize, add this to your kustomization and
+# keep the name, so the Deployment keeps finding it:
+#
+#   configMapGenerator:
+#     - name: quickportal-config
+#       behavior: replace
+#       files:
+#         - config.yaml
+#       options:
+#         disableNameSuffixHash: true
+#
+# The name must not get a content-hash suffix: a hashed name would roll the pod
+# on every config edit, which is the thing this project exists to avoid.
+version: 1
+title: QuickPortal
+subtitle: Edit the quickportal-config ConfigMap and this page updates itself
+theme: auto
+layout:
+  density: comfortable
+  minCardWidth: 14rem
+reload:
+  interval: 30
+groups:
+  - id: start
+    name: Start here
+    icon: "🚀"
+    items:
+      - id: docs
+        name: QuickPortal docs
+        url: https://example.com/quickportal
+        description: How to write this config
+        icon: "📖"
+        tags: [meta]
+      - id: config-example
+        name: Example configs
+        url: https://example.com/quickportal/examples
+        description: Minimal, nested and full samples
+        icon: "🧩"
+        tags: [meta]
+  - id: infra
+    name: Infrastructure
+    icon: "🧱"
+    items:
+      - id: grafana
+        name: Grafana
+        url: https://grafana.example.com
+        description: Dashboards and alerts
+        icon: auto
+        tags: [observability]
+      - id: argocd
+        name: Argo CD
+        url: https://argocd.example.com
+        description: Application delivery
+        icon: auto
+        tags: [gitops]
+    groups:
+      - id: storage
+        name: Storage
+        icon: "💾"
+        collapsed: true
+        items:
+          - id: minio
+            name: Object store
+            url: https://s3.example.com
+            description: Buckets and lifecycle rules
+            icon: auto
+  - id: media
+    name: Media
+    icon: "🎬"
+    items:
+      - id: library
+        name: Library
+        url: https://library.example.org
+        description: Films and shows
+        icon: auto
+        tags: [streaming]
+      - id: music
+        name: Music
+        url: https://music.example.org
+        icon: auto
+        tags: [streaming]
+sets:
+  - id: morning
+    name: Morning check
+    icon: "☀"
+    targets: [grafana, argocd, storage]
+  - id: media-all
+    name: Open all media
+    icon: "📺"
+    targets: [media]

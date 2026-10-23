@@ -282,7 +282,10 @@ function normalizeGroup(raw, path, parentIds, depth, index, ctx) {
   const id = resolveId(raw, path, name, parentIds, `group-${index}`, ctx, ctx.idPaths);
   if (id === null) return null;
 
-  const childIds = [...parentIds, id];
+  // The parent's id is already the whole qualified path, so it is the only
+  // prefix a child needs. Appending it to the inherited list instead would
+  // join the chain twice and produce media/media/downloads/deeper at depth 3.
+  const childIds = [id];
   const group = {
     id,
     name,

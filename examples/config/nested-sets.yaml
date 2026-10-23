@@ -1,0 +1,68 @@
+# Nesting and sets.
+#
+# Groups hold items, further groups, or both, to a depth of five. Sets open
+# many targets at once and can point at an item id, a group id (every item
+# beneath it, depth-first in config order), or a bare URL that appears nowhere
+# else in the tree.
+version: 1
+title: Platform
+subtitle: Nested groups and one-click sets
+groups:
+  - id: observability
+    name: Observability
+    icon: "📈"
+    items:
+      - id: grafana
+        name: Grafana
+        url: https://grafana.example.com
+        description: Dashboards
+        icon: auto
+      - id: alerts
+        name: Alertmanager
+        url: https://alerts.example.com
+        icon: auto
+    groups:
+      - id: logs
+        name: Logs
+        icon: "🧾"
+        items:
+          - id: loki
+            name: Loki
+            url: https://logs.example.com
+            icon: auto
+      - id: traces
+        name: Traces
+        icon: "🧭"
+        collapsed: true
+        items:
+          - id: tempo
+            name: Tempo
+            url: https://traces.example.com
+            icon: auto
+  - id: delivery
+    name: Delivery
+    icon: "🚚"
+    items:
+      - id: argocd
+        name: Argo CD
+        url: https://argocd.example.com
+        icon: auto
+      - id: registry
+        name: Registry
+        url: https://registry.example.org
+        icon: auto
+sets:
+  # An item id, a group id, and a bare URL in one set.
+  - id: incident
+    name: Incident response
+    icon: "🚨"
+    targets:
+      - alerts
+      - observability          # every item under Observability, depth-first
+      - https://status.example.org
+  # Small sets open without asking. Anything resolving to more than ten
+  # targets asks for confirmation first, so a mis-click cannot open a tab
+  # storm.
+  - id: deploys
+    name: Deploy check
+    targets: [argocd, registry]

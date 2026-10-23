@@ -1,0 +1,121 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "quickportal.fullname" . }}
+  labels:
+    {{- include "quickportal.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "quickportal.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # An app or server-config change rolls the pod. The user's config
+        # ConfigMap is pointedly absent from this list: a config edit must not
+        # restart anything.
+        checksum/app: {{ include (print $.Template.BasePath "/configmap-app.yaml") . | sha256sum }}
+        checksum/server-config: {{ include (print $.Template.BasePath "/configmap-server-config.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "quickportal.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Nothing in the pod talks to the API server.
+      automountServiceAccountToken: false
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: nginx
+          image: {{ include "quickportal.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # No subPath on any ConfigMap mount, anywhere. kubelet never
+            # updates a subPath mount after the container starts, so a subPath
+            # on the config volume would freeze the config at its start-up
+            # value and kill live reload with no error to show for it.
+            - name: app
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+            - name: server-config
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+            # The user's config lives at its own path rather than nested
+            # inside the read-only app volume; nginx aliases /config/ onto it.
+            - name: user-config
+              mountPath: /etc/quickportal
+              readOnly: true
+            # readOnlyRootFilesystem, so every path nginx writes to is an
+            # emptyDir. /var/cache/nginx also covers the client_body, proxy,
+            # fastcgi, uwsgi and scgi temp paths; the pid file goes to /tmp.
+            - name: cache
+              mountPath: /var/cache/nginx
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: app
+          configMap:
+            name: {{ include "quickportal.fullname" . }}-app
+            defaultMode: 0444
+        - name: server-config
+          configMap:
+            name: {{ include "quickportal.fullname" . }}-server-config
+            defaultMode: 0444
+        - name: user-config
+          configMap:
+            name: {{ include "quickportal.configMapName" . }}
+            defaultMode: 0444
+        - name: cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

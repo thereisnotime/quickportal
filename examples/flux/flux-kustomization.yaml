@@ -1,0 +1,81 @@
+# Flux Kustomization: render this repository into the cluster.
+#
+# No image build and no registry are involved. kustomize-controller fetches the
+# repository, turns src/ into a ConfigMap and applies it.
+#
+# The kustomization lives at the repository root, so this path is ./ and no
+# kustomize build options are needed.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: quickportal
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  timeout: 3m
+  prune: true
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: quickportal
+  path: ./
+  targetNamespace: quickportal
+  # Where your own config goes.
+  #
+  # The install ships a default quickportal-config ConfigMap so a fresh install
+  # renders a real page. This patch replaces its contents with yours. Flux
+  # keeps managing that ConfigMap, so edit it here and commit, rather than
+  # editing it in the cluster where the next reconcile would revert it.
+  #
+  # The patched ConfigMap has no content hash in its name, so applying a new
+  # config does NOT roll the pod: kubelet reprojects the volume within about a
+  # minute and the page picks the change up on its next ETag poll.
+  #
+  # If you would rather keep your config out of this object, drop the patch and
+  # manage a ConfigMap named quickportal-config yourself in the target
+  # namespace, with `prune` scoped so Flux does not delete it. Whatever you do,
+  # do not set `immutable: true` on it: an immutable ConfigMap can never
+  # change, and live reload then cannot work.
+  patches:
+    - target:
+        kind: ConfigMap
+        name: quickportal-config
+      patch: |
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: quickportal-config
+        data:
+          config.yaml: |
+            version: 1
+            title: Home
+            subtitle: Served from a ConfigMap, reloaded without a restart
+            theme: auto
+            reload:
+              interval: 30
+            groups:
+              - id: infra
+                name: Infrastructure
+                icon: "🧱"
+                items:
+                  - id: grafana
+                    name: Grafana
+                    url: https://grafana.example.com
+                    icon: auto
+                  - id: argocd
+                    name: Argo CD
+                    url: https://argocd.example.com
+                    icon: auto
+              - id: media
+                name: Media
+                icon: "🎬"
+                items:
+                  - id: library
+                    name: Library
+                    url: https://library.example.org
+                    icon: auto
+            sets:
+              - id: morning
+                name: Morning check
+                targets: [infra]

@@ -1,0 +1,9 @@
+# The smallest config that is still valid: a version and one item.
+# Everything else falls back to a documented default (title, theme auto,
+# comfortable density, 30s reload interval), and ids are derived from names.
+version: 1
+groups:
+  - name: Links
+    items:
+      - name: Example
+        url: https://example.com

@@ -1,0 +1,7 @@
+# Index for rendering this example locally:
+#   kustomize build examples/argocd
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - application.yaml

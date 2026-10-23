@@ -1,0 +1,93 @@
+# Every documented field of config version 1, with its meaning.
+#
+# The file may equally be JSON: the parser tries JSON.parse first and only
+# falls back to YAML, so a JSON config never pays for the YAML parser.
+
+version: 1                       # required; a version the portal does not
+                                 # implement is refused rather than guessed
+
+title: Everything               # page title and header text (default: QuickPortal)
+subtitle: One of each field      # optional line under the title
+theme: auto                      # auto | light | dark; the UI can override it
+                                 # per browser, and that choice wins
+
+layout:
+  density: comfortable           # comfortable | compact
+  minCardWidth: 14rem            # any CSS length; cards reflow above it
+
+reload:
+  interval: 30                   # seconds between ETag polls; 0 disables live
+                                 # reload entirely. Below ~30s is wasted
+                                 # effort: kubelet itself can take about a
+                                 # minute to project a changed ConfigMap.
+
+groups:
+  - id: media                    # optional; derived by slugifying the name
+                                 # within its parent path when absent. An
+                                 # explicit id pins the remembered collapse
+                                 # state across a rename.
+    name: Media
+    icon: "🎬"                   # emoji or text, an image URL, or "auto" to
+                                 # use the target origin's favicon
+    collapsed: false             # initial state only; the browser remembers
+                                 # each group by id after the first toggle
+    items:
+      - id: library
+        name: Library
+        url: https://library.example.com
+        description: Films and shows
+        icon: auto
+        tags: [streaming, media] # free-form labels, matched by the search box
+        target: _blank           # _blank (default) | _self
+      - id: music
+        name: Music
+        url: https://music.example.com
+        description: Albums and playlists
+        icon: "🎵"
+        tags: [streaming]
+        target: _blank
+    groups:                      # recursive, same shape, up to five levels
+      - id: media-admin
+        name: Admin
+        icon: "🛠"
+        collapsed: true
+        items:
+          - id: media-requests
+            name: Requests
+            url: https://requests.example.com
+            description: Queue of asked-for titles
+            icon: auto
+            tags: [admin]
+            target: _self        # opens in this tab instead of a new one
+
+  - id: infra
+    name: Infrastructure
+    icon: https://example.com/icons/infra.svg   # an icon can be a URL; the CSP
+                                                # allows images over https:
+    items:
+      - id: grafana
+        name: Grafana
+        url: https://grafana.example.com
+        description: Dashboards and alerts
+        icon: auto
+        tags: [observability]
+      - id: argocd
+        name: Argo CD
+        url: https://argocd.example.com
+        description: Application delivery
+        icon: auto
+        tags: [gitops]
+
+sets:
+  - id: morning                  # optional, like any other id
+    name: Morning check
+    icon: "☀"
+    targets:                     # item ids, group ids, or bare URLs
+      - grafana
+      - argocd
+      - media                    # expands to every item under the group
+      - https://status.example.org
+  - id: just-media
+    name: Open all media
+    icon: "📺"
+    targets: [library, music]

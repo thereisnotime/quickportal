@@ -1,0 +1,90 @@
+# Argo CD Application: deploy the portal straight from this repository.
+#
+# Nothing is built and nothing is pulled from a registry except the upstream
+# nginx image the Deployment names.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: quickportal
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # Replace with the repository URL; this file only names reserved
+    # placeholder domains.
+    repoURL: https://git.example.com/example-org/quickportal.git
+    # A tag, never a branch: the app ships as files, so a branch means the app
+    # can change under you.
+    targetRevision: v0.1.0
+    path: .
+    kustomize:
+      # Where your own config goes.
+      #
+      # The install ships a default quickportal-config ConfigMap so that a fresh
+      # install renders a real page instead of an empty screen; this patch
+      # replaces its contents with yours.
+      #
+      # The ConfigMap name carries no content hash, so a config change does not
+      # roll the pod. kubelet reprojects the volume within about a minute and
+      # the running page picks it up on its next ETag poll. The app ConfigMap
+      # is hashed instead, so bumping targetRevision to a new tag does roll it.
+      #
+      # Keep the config here (or in a second Application pointed at your own
+      # repository) rather than editing the ConfigMap in the cluster:
+      # selfHeal would revert a live edit at the next sync. And never set
+      # `immutable: true` on it, or it can never change and live reload stops
+      # working.
+      patches:
+        - target:
+            kind: ConfigMap
+            name: quickportal-config
+          patch: |-
+            - op: replace
+              path: /data/config.yaml
+              value: |
+                version: 1
+                title: Home
+                subtitle: Served from a ConfigMap, reloaded without a restart
+                theme: auto
+                reload:
+                  interval: 30
+                groups:
+                  - id: infra
+                    name: Infrastructure
+                    icon: "🧱"
+                    items:
+                      - id: grafana
+                        name: Grafana
+                        url: https://grafana.example.com
+                        icon: auto
+                      - id: argocd
+                        name: Argo CD
+                        url: https://argocd.example.com
+                        icon: auto
+                  - id: media
+                    name: Media
+                    icon: "🎬"
+                    items:
+                      - id: library
+                        name: Library
+                        url: https://library.example.org
+                        icon: auto
+                sets:
+                  - id: morning
+                    name: Morning check
+                    targets: [infra]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: quickportal
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The app ConfigMap is named with a content hash, so an upgrade creates a
+      # new one and prune removes the old.
+      - PrunePropagationPolicy=foreground
+  revisionHistoryLimit: 5

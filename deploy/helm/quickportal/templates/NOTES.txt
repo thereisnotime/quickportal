@@ -1,0 +1,36 @@
+QuickPortal {{ .Chart.AppVersion }} is installed as release {{ .Release.Name }}.
+
+No image was built and nothing was pushed to a registry. The app is served from
+a ConfigMap by the pinned upstream image {{ include "quickportal.image" . }}.
+
+Reach it with:
+
+  kubectl --context <your-context> -n {{ .Release.Namespace }} port-forward svc/{{ include "quickportal.fullname" . }} 8080:{{ .Values.service.port }}
+
+then open http://127.0.0.1:8080/
+{{- if .Values.ingress.enabled }}
+
+Ingress is enabled for:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- end }}
+
+Your config:
+{{- if .Values.config.existingConfigMap }}
+  ConfigMap {{ .Values.config.existingConfigMap }}, which you manage yourself.
+{{- else if .Values.config.create }}
+  ConfigMap {{ include "quickportal.configMapName" . }}, rendered from
+  config.inline in your values.
+{{- else }}
+  NOT CONFIGURED. Set config.create=true or config.existingConfigMap; the pod
+  will not become ready until the ConfigMap {{ include "quickportal.configMapName" . }} exists.
+{{- end }}
+
+Editing the config does not restart the pod. kubelet needs up to about a minute
+to project the change into the volume, and the page then picks it up on its next
+ETag poll (every 30s, unless you set reload.interval in the config).
+
+Two things stop that working, and neither is used by this chart: a ConfigMap
+mounted with subPath is never updated by kubelet, and an immutable ConfigMap
+cannot change at all. If you adapt these manifests, do not reintroduce either.

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_THEME,
   getTheme,
+  getStoredTheme,
   setTheme,
   isCollapsed,
   setCollapsed,
@@ -195,4 +196,39 @@ test("a getter that throws inside the property access is survivable", () => {
   assert.throws(() => storage.getItem, DOMExceptionLike, "the stub really does throw");
   assert.doesNotThrow(() => getTheme(storage));
   assert.equal(getTheme(storage), DEFAULT_THEME);
+});
+
+// --- Regression -------------------------------------------------------------
+//
+// getTheme() answers "auto" for both a remembered "auto" and for nothing
+// remembered, so a caller could not tell a deliberate choice from an absent
+// one, and a config's own `theme` either always won or always lost.
+
+test("getStoredTheme distinguishes a deliberate auto from no choice at all", () => {
+  const storage = createMemoryStorage();
+  assert.equal(getStoredTheme(storage), null, "nothing remembered yet");
+  assert.equal(getTheme(storage), DEFAULT_THEME, "getTheme still defaults");
+
+  setTheme("auto", storage);
+  assert.equal(getStoredTheme(storage), "auto", "a deliberate auto is a choice");
+
+  setTheme("dark", storage);
+  assert.equal(getStoredTheme(storage), "dark");
+});
+
+test("getStoredTheme rejects junk and survives storage being unavailable", () => {
+  const storage = createMemoryStorage();
+  storage.setItem("quickportal.theme", "chartreuse");
+  assert.equal(getStoredTheme(storage), null);
+
+  const hostile = {
+    getItem() {
+      throw new Error("blocked");
+    },
+    setItem() {
+      throw new Error("blocked");
+    },
+    removeItem() {},
+  };
+  assert.equal(getStoredTheme(hostile), null);
 });

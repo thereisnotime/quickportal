@@ -1,0 +1,1015 @@
+/* ==========================================================================
+   QuickPortal stylesheet
+   Sections: 1 tokens - 2 base - 3 utilities - 4 toolbar - 5 notices and issues
+             6 portal head and sets - 7 tree - 8 cards and icons - 9 dialogs
+             10 footer - 11 density - 12 motion and print
+   No @import, no webfont, no third-party origin: the CSP is default-src 'self'.
+   ========================================================================== */
+
+/* 1. Tokens ================================================================ */
+
+:root {
+  /* Light is the default; dark is redefined below. An explicit data-theme on
+     <html> wins over the system preference, which is why the dark media query
+     is guarded with :not([data-theme='light']). */
+  --bg: #f6f7f9;
+  --bg-elev: #ffffff;
+  --bg-sunken: #eceef2;
+  --bg-hover: #e8ebf1;
+  --fg: #15181d;
+  --fg-muted: #555e6c;
+  --fg-faint: #6f7886;
+  --border: #dce0e7;
+  --border-strong: #c3c9d4;
+  --accent: #2a52c9;
+  --accent-fg: #ffffff;
+  --accent-weak: #e6ecfb;
+  --focus: #123cad;
+  --danger: #9a1c21;
+  --danger-bg: #fdecec;
+  --danger-border: #f0b9b9;
+  --warn: #7a4a06;
+  --warn-bg: #fdf3e2;
+  --warn-border: #eed6a8;
+
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --shadow: 0 1px 2px rgb(16 20 28 / 6%), 0 1px 8px rgb(16 20 28 / 4%);
+
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.5rem;
+  --sp-6: 2rem;
+
+  /* Overridden from config.layout.minCardWidth at runtime. */
+  --min-card-width: 14rem;
+  /* Per-level indentation of nested groups; deliberately small so depth 4
+     still fits a 320px screen. */
+  --indent: clamp(0.5rem, 1.6vw, 0.9rem);
+  --target: 44px;
+  --max-width: 108rem;
+
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell,
+    "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono",
+    monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1115;
+    --bg-elev: #171a21;
+    --bg-sunken: #1e222b;
+    --bg-hover: #242933;
+    --fg: #e9ebef;
+    --fg-muted: #a6aeba;
+    --fg-faint: #8c94a1;
+    --border: #272c36;
+    --border-strong: #3a4150;
+    --accent: #8ab0ff;
+    --accent-fg: #0f1115;
+    --accent-weak: #1d2740;
+    --focus: #a9c6ff;
+    --danger: #ff9d9d;
+    --danger-bg: #2a1618;
+    --danger-border: #5a2b2e;
+    --warn: #f0c986;
+    --warn-bg: #2a2214;
+    --warn-border: #574522;
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 2px 10px rgb(0 0 0 / 25%);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0f1115;
+  --bg-elev: #171a21;
+  --bg-sunken: #1e222b;
+  --bg-hover: #242933;
+  --fg: #e9ebef;
+  --fg-muted: #a6aeba;
+  --fg-faint: #8c94a1;
+  --border: #272c36;
+  --border-strong: #3a4150;
+  --accent: #8ab0ff;
+  --accent-fg: #0f1115;
+  --accent-weak: #1d2740;
+  --focus: #a9c6ff;
+  --danger: #ff9d9d;
+  --danger-bg: #2a1618;
+  --danger-border: #5a2b2e;
+  --warn: #f0c986;
+  --warn-bg: #2a2214;
+  --warn-border: #574522;
+  --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 2px 10px rgb(0 0 0 / 25%);
+
+  color-scheme: dark;
+}
+
+/* 2. Base ================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 1rem;
+  line-height: 1.45;
+  /* Guards against any single long word (a bare URL) forcing a page scroll. */
+  overflow-wrap: break-word;
+}
+
+/* Collapsed group bodies and filtered-out items rely on [hidden]; several
+   elements below set display, which would otherwise win over it. */
+[hidden] {
+  display: none !important;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  line-height: 1.25;
+  font-weight: 600;
+}
+
+p {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: var(--accent);
+}
+
+code,
+kbd {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.5em;
+  padding: 0.1em 0.4em;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  text-align: center;
+  white-space: nowrap;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* 3. Utilities ============================================================= */
+
+.shell {
+  width: 100%;
+  max-width: var(--max-width);
+  margin-inline: auto;
+  padding-inline: clamp(0.75rem, 2.5vw, 2rem);
+}
+
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  z-index: 50;
+  transform: translate(-50%, -120%);
+  padding: var(--sp-2) var(--sp-4);
+  border: 1px solid var(--border-strong);
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--bg-elev);
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.skip-link:focus-visible {
+  transform: translate(-50%, 0);
+}
+
+.noscript {
+  max-width: 48rem;
+  margin: var(--sp-5) auto;
+  padding: var(--sp-4);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+/* Shared button. Everything clickable is a real <button> or <a>: the CSP
+   forbids inline handlers, so behaviour is bound in JS by class or data-*. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--target);
+  min-width: var(--target);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.btn-quiet {
+  background: transparent;
+  border-color: transparent;
+}
+
+.btn-quiet:hover {
+  background: var(--bg-hover);
+}
+
+.btn-accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.btn-accent:hover {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+/* 4. Toolbar =============================================================== */
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding-block: var(--sp-3) var(--sp-2);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.toolbar-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+}
+
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.search-icon {
+  position: absolute;
+  left: 0.7rem;
+  color: var(--fg-faint);
+  pointer-events: none;
+}
+
+#search {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--target);
+  padding: 0 2.75rem 0 2.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font: inherit;
+}
+
+#search::placeholder {
+  color: var(--fg-faint);
+}
+
+#search::-webkit-search-cancel-button {
+  display: none;
+}
+
+.search-clear {
+  position: absolute;
+  right: 0.15rem;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.kbd-inline {
+  border: 0;
+  background: var(--bg-sunken);
+  color: var(--fg-faint);
+}
+
+.hints {
+  margin-top: var(--sp-2);
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+}
+
+/* The labels are the first thing to go when the toolbar gets tight; the
+   glyphs stay, and every button keeps its accessible name. */
+@media (max-width: 46rem) {
+  .btn-label,
+  .kbd-inline {
+    display: none;
+  }
+
+  .toolbar-actions {
+    gap: var(--sp-1);
+  }
+}
+
+@media (max-width: 30rem) {
+  .hints {
+    display: none;
+  }
+}
+
+/* 5. Notices and issues ==================================================== */
+
+.portal {
+  padding-block: var(--sp-5) var(--sp-6);
+}
+
+.notices {
+  display: grid;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+
+.notices:empty {
+  display: none;
+}
+
+.notice {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+}
+
+.notice-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.notice-title {
+  font-size: 1rem;
+}
+
+.notice-body {
+  color: var(--fg-muted);
+  font-size: 0.92rem;
+}
+
+.notice-error {
+  border-color: var(--danger-border);
+  border-left-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.notice-error .notice-title {
+  color: var(--danger);
+}
+
+.notice-warn {
+  border-color: var(--warn-border);
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
+}
+
+.notice-warn .notice-title {
+  color: var(--warn);
+}
+
+.notice-info {
+  border-left-color: var(--accent);
+}
+
+/* path: message lists, and link lists for blocked popups. */
+.issue-list {
+  display: grid;
+  gap: var(--sp-2);
+  font-size: 0.92rem;
+}
+
+.issue {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+}
+
+.issue-path {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.issue-message {
+  color: var(--fg-muted);
+}
+
+.notice-hints {
+  display: grid;
+  gap: var(--sp-1);
+  margin: 0;
+  padding-left: 1.1rem;
+  list-style: disc;
+  color: var(--fg-muted);
+  font-size: 0.88rem;
+}
+
+.notice-links {
+  display: grid;
+  gap: var(--sp-1);
+  font-size: 0.92rem;
+}
+
+.notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* 6. Portal head and sets ================================================== */
+
+.portal-head {
+  margin-bottom: var(--sp-5);
+}
+
+.portal-title {
+  font-size: clamp(1.4rem, 1.1rem + 1.4vw, 2rem);
+  letter-spacing: -0.01em;
+}
+
+.portal-subtitle {
+  margin-top: var(--sp-1);
+  color: var(--fg-muted);
+}
+
+.sets {
+  margin-bottom: var(--sp-5);
+}
+
+.sets:empty {
+  display: none;
+}
+
+.sets-label {
+  margin-bottom: var(--sp-2);
+  color: var(--fg-faint);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sets-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.set-btn {
+  border-color: var(--border-strong);
+}
+
+.set-count {
+  color: var(--fg-faint);
+  font-size: 0.78rem;
+}
+
+/* 7. Tree ================================================================== */
+
+.tree {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+/* Top level groups read as cards; nested levels read as indented sections with
+   a single guide rule, so depth 4 is four thin lines rather than four boxes. */
+.group {
+  min-width: 0;
+}
+
+.group[data-depth="0"] {
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow);
+}
+
+.group[data-depth="0"] > .group-head {
+  margin-inline: calc(-1 * var(--sp-2));
+}
+
+.group-head {
+  font-size: inherit;
+}
+
+.group-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: var(--target);
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.group-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.group-name {
+  min-width: 0;
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+
+.group[data-depth="0"] > .group-head .group-name {
+  font-size: 1.1rem;
+}
+
+.group:not([data-depth="0"]) .group-name {
+  font-size: 0.98rem;
+}
+
+.group-count {
+  margin-left: auto;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--fg-faint);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.chev {
+  flex: 0 0 auto;
+  width: 1rem;
+  color: var(--fg-faint);
+  font-size: 0.7rem;
+  transition: transform 140ms ease;
+}
+
+.group-toggle[aria-expanded="false"] .chev {
+  transform: rotate(-90deg);
+}
+
+.group-body {
+  display: grid;
+  gap: var(--sp-4);
+  /* Container queries let a deeply indented group drop its descriptions
+     without guessing from the viewport width. */
+  container-type: inline-size;
+}
+
+.group[data-depth="0"] > .group-body {
+  padding-top: var(--sp-2);
+}
+
+.group:not([data-depth="0"]) > .group-body {
+  margin-top: var(--sp-1);
+  margin-left: calc(var(--indent) / 2);
+  padding-left: var(--indent);
+  border-left: 1px solid var(--border);
+}
+
+.subgroups {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.subgroups:empty,
+.items:empty {
+  display: none;
+}
+
+/* 8. Cards and icons ======================================================= */
+
+.items {
+  display: grid;
+  /* min() keeps a wide minCardWidth from overflowing a 320px viewport. */
+  grid-template-columns: repeat(
+    auto-fit,
+    minmax(min(var(--min-card-width), 100%), 1fr)
+  );
+  gap: var(--sp-2);
+}
+
+.item {
+  min-width: 0;
+}
+
+.card {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: 100%;
+  min-height: var(--target);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 120ms ease, background-color 120ms ease,
+    transform 120ms ease;
+}
+
+.group[data-depth="0"] > .group-body .card {
+  background: var(--bg);
+}
+
+.card:hover {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+}
+
+.card:active {
+  transform: translateY(1px);
+}
+
+.card-body {
+  min-width: 0;
+}
+
+.card-name {
+  display: block;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+
+.card-desc {
+  display: -webkit-box;
+  margin-top: 0.1rem;
+  color: var(--fg-muted);
+  font-size: 0.84rem;
+  /* Two lines, then ellipsis: descriptions vary wildly in length. */
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-top: var(--sp-1);
+}
+
+.tag {
+  padding: 0 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-faint);
+  font-size: 0.7rem;
+}
+
+@container (max-width: 15rem) {
+  .card-desc,
+  .card-tags {
+    display: none;
+  }
+}
+
+/* The slot is a transparent wrapper so the icon itself is the flex item and
+   an icon-less group collapses to nothing. */
+.icon-slot {
+  display: contents;
+}
+
+.icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.9rem;
+  height: 1.9rem;
+  overflow: hidden;
+  border-radius: 7px;
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.icon-img {
+  width: 100%;
+  height: 100%;
+  padding: 2px;
+  object-fit: contain;
+  /* Transparent until it loads, so a slow favicon never flashes a frame. */
+  background: transparent;
+}
+
+.icon-initials {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.group-toggle .icon {
+  width: 1.6rem;
+  height: 1.6rem;
+  font-size: 0.9rem;
+}
+
+/* 9. Empty states and dialogs ============================================== */
+
+.panel {
+  display: grid;
+  gap: var(--sp-3);
+  justify-items: start;
+  padding: var(--sp-5);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+}
+
+.panel h2,
+.panel h3 {
+  color: var(--fg);
+}
+
+.panel pre {
+  width: 100%;
+  margin: 0;
+  padding: var(--sp-3);
+  overflow-x: auto;
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+  color: var(--fg);
+  font-size: 0.82rem;
+}
+
+.filter-summary {
+  margin-bottom: var(--sp-3);
+  color: var(--fg-muted);
+  font-size: 0.88rem;
+}
+
+.filter-summary:empty {
+  display: none;
+}
+
+.dialog {
+  width: min(42rem, calc(100vw - 2rem));
+  max-height: min(80vh, 40rem);
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+  color: var(--fg);
+  box-shadow: 0 10px 40px rgb(0 0 0 / 25%);
+}
+
+.dialog::backdrop {
+  background: rgb(8 10 14 / 45%);
+  backdrop-filter: blur(2px);
+}
+
+/* A closed <dialog> must stay display:none, so the flex layout is applied to
+   the open state only. */
+.palette[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.palette-field {
+  padding: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+#palette-input {
+  width: 100%;
+  min-height: var(--target);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 1rem;
+}
+
+.palette-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: var(--sp-2);
+}
+
+.palette-option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: var(--target);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.palette-option[aria-selected="true"] {
+  background: var(--accent-weak);
+  outline: 1px solid var(--accent);
+}
+
+.palette-option .opt-text {
+  min-width: 0;
+}
+
+.palette-option .opt-name {
+  display: block;
+}
+
+.palette-option .opt-meta {
+  display: block;
+  color: var(--fg-faint);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.palette-kind {
+  margin-left: auto;
+  color: var(--fg-faint);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.palette-empty,
+.palette-foot {
+  padding: var(--sp-3);
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 0.82rem;
+}
+
+.shortcuts {
+  padding: var(--sp-5);
+}
+
+.shortcut-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--sp-2) var(--sp-4);
+  margin: var(--sp-4) 0;
+}
+
+.shortcut-list dt {
+  white-space: nowrap;
+}
+
+.shortcut-list dd {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+/* 10. Footer =============================================================== */
+
+.appfoot {
+  padding-bottom: var(--sp-6);
+}
+
+.status {
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+  color: var(--fg-faint);
+  font-size: 0.8rem;
+}
+
+/* 11. Density ============================================================== */
+
+[data-density="compact"] {
+  --sp-5: 1rem;
+  --sp-6: 1.25rem;
+}
+
+[data-density="compact"] .card {
+  padding: var(--sp-1) var(--sp-2);
+}
+
+[data-density="compact"] .card-desc {
+  -webkit-line-clamp: 1;
+}
+
+[data-density="compact"] .tree {
+  gap: var(--sp-3);
+}
+
+/* Compact may shrink targets only where the pointer is precise; touch keeps
+   the 44px minimum. */
+@media (pointer: fine) {
+  [data-density="compact"] {
+    --target: 36px;
+  }
+}
+
+/* 12. Motion and print ===================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media print {
+  .toolbar,
+  .appfoot,
+  .sets,
+  .skip-link {
+    display: none;
+  }
+
+  .group,
+  .card {
+    box-shadow: none;
+  }
+}

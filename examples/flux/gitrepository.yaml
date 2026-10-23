@@ -1,0 +1,26 @@
+# Flux source: this repository, at a tag.
+#
+# Pin a tag, not a branch. The app ships as files, so a branch would mean the
+# app changes under you whenever upstream pushes.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: quickportal
+  namespace: flux-system
+spec:
+  interval: 1h
+  # Replace with the repository URL. Everything in this repository uses
+  # reserved placeholder domains.
+  url: https://git.example.com/example-org/quickportal.git
+  ref:
+    tag: v0.1.0
+  # Only the root kustomization, the manifests and the app files are needed;
+  # ignore the rest so a docs commit does not churn the source revision.
+  #
+  # Leaving /kustomization.yaml out of this list is a silent failure: the build
+  # then has no kustomization to run.
+  ignore: |
+    /*
+    !/kustomization.yaml
+    !/src
+    !/deploy

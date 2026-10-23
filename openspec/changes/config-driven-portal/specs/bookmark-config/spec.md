@@ -55,9 +55,18 @@ Every group and item SHALL have an identifier, supplied explicitly or derived fr
 ### Requirement: An invalid config never produces a blank page
 The portal SHALL always render something explaining what is wrong, and SHALL distinguish errors from warnings.
 
-#### Scenario: Errors present
-- **WHEN** the config has one or more errors
-- **THEN** the page lists each as `path: message` and renders no bookmark tree
+#### Scenario: Document-level error
+- **WHEN** the config is unusable as a whole, such as not being a mapping or
+  declaring a missing or future `version`
+- **THEN** the page lists each error as `path: message` and renders no bookmark
+  tree, because there is nothing trustworthy to render
+
+#### Scenario: Entry-level error
+- **WHEN** the config is usable but individual entries are not, such as an item
+  with no `url` or one set with an unresolvable target
+- **THEN** the offending entries are dropped, the errors are listed as
+  `path: message` above the tree, and the rest of the tree renders, because one
+  bad entry must not blank the whole portal
 
 #### Scenario: Warnings only
 - **WHEN** the config has warnings but no errors, such as an unknown key

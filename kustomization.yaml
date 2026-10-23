@@ -1,0 +1,82 @@
+# QuickPortal: the thing you install.
+#
+# There is no image to build and nothing to publish. This kustomization turns
+# the application files in src/ into a ConfigMap and mounts them into a stock
+# upstream nginx, so installing QuickPortal is this repository plus your own
+# config ConfigMap.
+#
+#   resources:
+#     - https://git.example.com/example-org/quickportal.git//?ref=v0.1.0
+#
+# (substitute the real repository URL; this file only ever names reserved
+# placeholder domains, and you should pin a tag rather than a branch)
+#
+# WHY THIS FILE IS AT THE REPOSITORY ROOT, and not under deploy/:
+#
+# kustomize refuses to read files outside the kustomization root. The app files
+# live in src/, so a kustomization under deploy/kustomize/base/ cannot reach
+# them and fails with "security; file ... is not in or below ...". Flux happens
+# to build with load restrictions disabled and would have worked, but plain
+# `kustomize build`, CI and Argo CD would all have needed
+# `--load-restrictor LoadRestrictionsNone`, and in Argo's case that is a
+# repo-server-wide setting imposed on every other application in the cluster.
+#
+# Rooting the kustomization here means every path it reads is below it, so the
+# default restrictor is satisfied and every tool works unmodified.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deploy/kustomize/base/deployment.yaml
+  - deploy/kustomize/base/service.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: quickportal
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+
+configMapGenerator:
+  # The application itself.
+  #
+  # Keys are basenames, because a ConfigMap key cannot contain a slash. That is
+  # why the served tree is flat (/app.js, not /assets/app.js) and why every
+  # basename under src/ has to stay unique.
+  #
+  # The name carries kustomize's content hash, which is the upgrade mechanism:
+  # change an app file, get a new ConfigMap name, and the Deployment's volume
+  # reference is rewritten for you, which rolls the pod.
+  - name: quickportal-app
+    files:
+      - src/index.html
+      - src/assets/app.css
+      - src/assets/app.js
+      - src/assets/config.js
+      - src/assets/render.js
+      - src/assets/reload.js
+      - src/assets/sets.js
+      - src/assets/state.js
+      # Vendored YAML parser. It sits next to the app assets so every basename
+      # under src/ stays unique, which the flat served tree requires, and so a
+      # relative import resolves the same in this repository and when served.
+      - src/assets/js-yaml.mjs
+
+  # The server config. Also hashed: the cache headers are load-bearing, so a
+  # change to them should roll the pod just like an app change.
+  - name: quickportal-server-config
+    files:
+      - deploy/kustomize/base/nginx/default.conf
+      - deploy/kustomize/base/nginx/security-headers.inc
+
+  # Your config, shipped with a working default so a fresh install renders a
+  # real page instead of an empty one.
+  #
+  # Deliberately not hashed: this ConfigMap is the one thing that must be
+  # editable without rolling the pod. Replace it from your own kustomization
+  # with `behavior: replace` (see examples/), which works precisely because it
+  # is generated here rather than being a plain resource.
+  - name: quickportal-config
+    files:
+      - deploy/kustomize/base/config/config.yaml
+    options:
+      disableNameSuffixHash: true

@@ -164,6 +164,16 @@ Settled while implementing, and binding on the renderer and the docs:
   depth cap.
 - Entries that error are dropped from the tree; a partially valid set keeps its
   resolvable targets.
+- **What blocks the tree is whether `normalizeConfig` returned a config at all**,
+  not the severity or the path of individual issues. It returns none only when
+  the document is unusable as a whole: not a mapping, or a missing or future
+  `version`. Everything narrower renders the surviving tree with the problems
+  listed above it. The renderer must take this from the return value and never
+  pattern-match issue paths to decide it.
+- `getStoredTheme()` returns `null` when the viewer has never chosen a theme,
+  which is what lets a deliberate choice of `auto` still beat `theme` in the
+  config. `getTheme()` cannot express that difference and must not be used for
+  the precedence decision.
 - Ids are global across groups and items, derived ids are the ancestor chain
   joined with `/` (`media/downloads/queue`), and **set ids are a separate
   namespace**, since nothing resolves a set by id.

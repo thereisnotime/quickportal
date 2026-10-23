@@ -1,0 +1,22 @@
+{{- if and .Values.config.create (not .Values.config.existingConfigMap) }}
+{{/*
+The user's config.
+
+Deliberately NOT checksummed into the pod template: editing it must not roll
+the pod. kubelet reprojects the change into the volume within about a minute
+and the page notices it on its next ETag poll.
+
+Two things would break that, and neither is used here or anywhere else in this
+project: mounting it with subPath, which kubelet never updates, and marking it
+immutable, which stops it changing at all.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "quickportal.configMapName" . }}
+  labels:
+    {{- include "quickportal.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+{{ .Values.config.inline | indent 4 }}
+{{- end }}

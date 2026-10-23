@@ -1,0 +1,24 @@
+apiVersion: v2
+name: quickportal
+description: Build-free static start page for Kubernetes, driven entirely by a ConfigMap
+type: application
+# Chart version; bump on any chart change.
+version: 0.1.0
+# The app ships as files in this chart, so appVersion tracks the repository tag.
+appVersion: "0.1.0"
+kubeVersion: ">=1.23.0-0"
+keywords:
+  - dashboard
+  - start-page
+  - bookmarks
+  - static
+  - gitops
+home: https://example.com/quickportal
+sources:
+  - https://git.example.com/example-org/quickportal.git
+maintainers:
+  - name: QuickPortal maintainers
+annotations:
+  # The chart is the alternative path. The primary install is the kustomize
+  # base, which needs no chart and no templating.
+  category: Productivity

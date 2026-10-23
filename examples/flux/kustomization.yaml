@@ -1,0 +1,9 @@
+# Index for rendering this example locally:
+#   kustomize build examples/flux
+# It contains Flux custom resources only, so it needs no app files and no
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - gitrepository.yaml
+  - flux-kustomization.yaml

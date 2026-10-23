@@ -1,0 +1,35 @@
+# Example overlay for YOUR repository: QuickPortal plus an Ingress and your
+# own config.
+#
+# This file deliberately lives under examples/ and cannot be rendered from
+# inside this repository: the QuickPortal kustomization is at the repository
+# root, so an overlay stored beneath it would reference its own parent and
+# kustomize rejects that as a cycle. In your repository there is no such
+# relationship and it just works.
+#
+# Copy this directory out, point the resource at a tag, drop your config in
+# config.yaml and edit the host in ingress.yaml. Every hostname here is a
+# reserved placeholder and has to be replaced.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: quickportal
+
+resources:
+  # Pin a tag, never a branch.
+  - https://git.example.com/example-org/quickportal.git//?ref=v0.1.0
+  - ingress.yaml
+
+configMapGenerator:
+  # Replace the default config that ships with QuickPortal.
+  #
+  # `behavior: replace` works because QuickPortal creates this ConfigMap with a
+  # generator rather than as a plain resource. The hash suffix stays disabled:
+  # a hashed name would roll the pod on every config edit, and not rolling the
+  # pod is the entire point.
+  - name: quickportal-config
+    behavior: replace
+    files:
+      - config.yaml
+    options:
+      disableNameSuffixHash: true

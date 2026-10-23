@@ -1,0 +1,157 @@
+# QuickPortal Helm values.
+#
+# The chart is the alternative install path, for people who would rather have a
+# chart than a kustomize base. It renders the same Deployment, Service and
+# ConfigMaps, carries the same nginx config, and still builds no image: the
+# only image referenced is the pinned upstream nginx below.
+
+replicaCount: 1
+
+image:
+  # Stock upstream nginx-unprivileged. Nothing in the app depends on nginx
+  # beyond the cache headers, so this is swappable, but it must be an image
+  # that listens on an unprivileged port and runs as a non-root uid.
+  repository: docker.io/nginxinc/nginx-unprivileged
+  tag: 1.30.6-alpine
+  # Pinned by digest as well as tag. Clear it if you mirror the image and the
+  # digest differs.
+  digest: sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# The user's config.
+config:
+  # create: true renders a ConfigMap from `inline` below. Set it to false and
+  # point `existingConfigMap` at your own object when you would rather manage
+  # the config outside this release, for instance so that editing it does not
+  # show up as a Helm upgrade.
+  create: true
+  existingConfigMap: ""
+  # Written verbatim as config.yaml. May be YAML or JSON.
+  #
+  # This ConfigMap is NOT checksummed into the pod template on purpose: editing
+  # the config must not roll the pod. kubelet reprojects the volume within
+  # about a minute and the page picks it up on its next ETag poll.
+  #
+  # Never set immutable on it, and never mount it with subPath: both make the
+  # mounted file unchangeable, and live reload then silently cannot work.
+  inline: |
+    version: 1
+    title: QuickPortal
+    subtitle: Edit the config in your values and this page updates itself
+    theme: auto
+    layout:
+      density: comfortable
+      minCardWidth: 14rem
+    reload:
+      interval: 30
+    groups:
+      - id: infra
+        name: Infrastructure
+        icon: "🧱"
+        items:
+          - id: grafana
+            name: Grafana
+            url: https://grafana.example.com
+            description: Dashboards and alerts
+            icon: auto
+          - id: argocd
+            name: Argo CD
+            url: https://argocd.example.com
+            description: Application delivery
+            icon: auto
+      - id: media
+        name: Media
+        icon: "🎬"
+        items:
+          - id: library
+            name: Library
+            url: https://library.example.org
+            description: Films and shows
+            icon: auto
+    sets:
+      - id: morning
+        name: Morning check
+        icon: "☀"
+        targets: [infra]
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # The portal has no authentication of its own. If it is reachable from
+    # anywhere you do not control, put an auth proxy in front of it:
+    # nginx.ingress.kubernetes.io/auth-url: https://auth.example.com/verify
+  hosts:
+    - host: portal.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+    # - secretName: quickportal-tls
+    #   hosts:
+    #     - portal.example.com
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 24Mi
+  limits:
+    cpu: 250m
+    memory: 64Mi
+
+# Hardened by default. Loosen at your own risk: the container serves static
+# files and needs no capability, no write access to its root filesystem and no
+# privilege escalation.
+podSecurityContext:
+  runAsNonRoot: true
+  # uid/gid 101 (nginx) in nginx-unprivileged.
+  runAsUser: 101
+  runAsGroup: 101
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  privileged: false
+  capabilities:
+    drop: [ALL]
+
+# nginx-unprivileged cannot bind a privileged port.
+containerPort: 8080
+
+readinessProbe:
+  httpGet:
+    path: /index.html
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 20
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""

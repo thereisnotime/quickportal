@@ -1,0 +1,17 @@
+{{/*
+The nginx config, symlinked from deploy/kustomize/base/nginx so the chart and
+the kustomize base can never drift. The cache headers in it are load-bearing:
+the config file is served revalidated so live reload works, and the assets are
+cacheable. A change rolls the pod via checksum/server-config.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "quickportal.fullname" . }}-server-config
+  labels:
+    {{- include "quickportal.labels" . | nindent 4 }}
+data:
+{{- range $path, $bytes := .Files.Glob "files/nginx/*" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
