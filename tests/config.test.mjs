@@ -20,6 +20,9 @@ import {
   FRAME_DEFAULT_MAX,
   ALLOW_TOKENS,
   SANDBOX_TOKENS,
+  DIAGRAM_DEFAULT_MAX_BYTES,
+  DIAGRAM_MAX_BYTES_LIMIT,
+  isSafeRendererUrl,
 } from "../src/assets/config.js";
 import { load as yamlLoad } from "../src/assets/js-yaml.mjs";
 
@@ -1035,4 +1038,412 @@ groups:
   assert.match(messageFor(warnings, "embedding.maxFrames"), /between 1 and/);
   assert.equal(config.embedding.docsUrl, "https://runbook.example.org/embedding");
   assert.equal(config.embedding.maxFrames, 4);
+});
+
+// ---------------------------------------------------------------------------
+// Requirement: The diagram section is validated
+//
+// One test per scenario in
+// openspec/changes/architecture-diagram/specs/bookmark-config/spec.md.
+// ---------------------------------------------------------------------------
+
+const GROUPS_YAML = `groups:
+  - name: A
+    items:
+      - name: B
+        url: https://b.example.com
+`;
+
+/** A config with a diagram section and one bookmark, so the tree is valid too. */
+function withDiagram(diagramYaml) {
+  return `version: 1\ndiagram:\n${diagramYaml}${GROUPS_YAML}`;
+}
+
+test("a config with no diagram section is unchanged, and nothing is configured", () => {
+  const { config, errors, warnings } = loadConfig(MINIMAL_YAML);
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  assert.equal(config.diagram, null, "null is what 'render no panel, fetch nothing' looks like");
+});
+
+// --- Scenario: Valid diagram section ---------------------------------------
+
+test("a diagram with a usable src and a positive maxBytes is accepted and marked configured", () => {
+  const { config, errors, warnings } = loadConfig(
+    withDiagram(`  title: Architecture
+  src: ./config/diagram.svg
+  maxBytes: 262144
+`),
+  );
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(config.diagram, {
+    title: "Architecture",
+    src: "./config/diagram.svg",
+    maxBytes: 262144,
+    renderer: null,
+    source: null,
+    mode: "src",
+  });
+});
+
+test("the diagram title is optional and falls back to the documented default", () => {
+  const { config, errors, warnings } = loadConfig(withDiagram("  src: ./config/diagram.svg\n"));
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  assert.equal(config.diagram.title, DEFAULTS.diagramTitle);
+  assert.equal(config.diagram.maxBytes, DIAGRAM_DEFAULT_MAX_BYTES);
+});
+
+test("a blank or non-text title warns where it must and still leaves a usable heading", () => {
+  const blank = loadConfig(withDiagram('  title: "  "\n  src: ./config/diagram.svg\n'));
+  assert.deepEqual(blank.errors, []);
+  assert.deepEqual(blank.warnings, [], "a blank heading is not worth a warning, just a fallback");
+  assert.equal(blank.config.diagram.title, DEFAULTS.diagramTitle);
+
+  const wrongType = loadConfig(withDiagram("  title: [a, b]\n  src: ./config/diagram.svg\n"));
+  assert.deepEqual(wrongType.errors, []);
+  assert.match(messageFor(wrongType.warnings, "diagram.title"), /expected text/);
+  assert.equal(wrongType.config.diagram.title, DEFAULTS.diagramTitle);
+});
+
+test("the new diagram keys do not trip the unknown-key warning", () => {
+  const { errors, warnings } = loadConfig(
+    withDiagram(`  title: Architecture
+  src: ./config/diagram.svg
+  maxBytes: 100000
+  renderer:
+    url: https://cdn.example.com/renderer.mjs
+    options: {theme: dark}
+  source: |
+    flowchart TD
+      a --> b
+`),
+  );
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, [], "every documented diagram key is recognised");
+});
+
+test("an unknown key inside diagram or its renderer is warned about, not silently accepted", () => {
+  const { warnings } = loadConfig(
+    withDiagram(`  src: ./config/diagram.svg
+  maxBytes: 100000
+  height: 400
+`),
+  );
+  assert.deepEqual(paths(warnings), ["diagram.height"]);
+
+  const renderer = loadConfig(
+    withDiagram(`  renderer:
+    url: https://cdn.example.com/renderer.mjs
+    theme: dark
+  source: "flowchart TD"
+`),
+  );
+  assert.deepEqual(paths(renderer.warnings), ["diagram.renderer.theme"]);
+});
+
+test("a diagram block that is not a mapping warns and shows no diagram", () => {
+  const { config, errors, warnings } = loadConfig(withDiagram("").replace("diagram:\n", "diagram: 4\n"));
+
+  assert.deepEqual(errors, []);
+  assert.match(messageFor(warnings, "diagram"), /expected a mapping/);
+  assert.equal(config.diagram, null);
+});
+
+// --- Scenario: Missing src -------------------------------------------------
+
+test("a diagram section with neither src nor renderer is an error at diagram.src", () => {
+  const { config, errors } = loadConfig(withDiagram("  title: Architecture\n"));
+
+  assert.match(messageFor(errors, "diagram.src"), /nothing to show/);
+  assert.equal(config.diagram, null, "nothing half-configured reaches the view layer");
+});
+
+test("an empty diagram mapping is reported the same way", () => {
+  const { config, errors } = loadConfig(`version: 1\ndiagram: {}\n${GROUPS_YAML}`);
+
+  assert.deepEqual(paths(errors), ["diagram.src"]);
+  assert.equal(config.diagram, null);
+});
+
+test("a src that is not text or not a path is an error, not a silent default", () => {
+  for (const src of ["[a, b]", "17"]) {
+    const { config, errors } = loadConfig(withDiagram(`  src: ${src}\n`));
+    assert.match(messageFor(errors, "diagram.src"), /src must be the path/, `src: ${src}`);
+    assert.equal(config.diagram, null);
+  }
+
+  const spaced = loadConfig(withDiagram('  src: "not a path"\n'));
+  assert.match(messageFor(spaced.errors, "diagram.src"), /is not a path or URL/);
+
+  const scripted = loadConfig(withDiagram('  src: "javascript:alert(1)"\n'));
+  assert.match(messageFor(scripted.errors, "diagram.src"), /javascript: URLs are not allowed/);
+  assert.equal(scripted.config.diagram, null);
+});
+
+test("the nothing-to-show error is not piled on top of a more specific one", () => {
+  const { errors } = loadConfig(withDiagram('  src: "not a path"\n'));
+  assert.deepEqual(paths(errors), ["diagram.src"], "one error, naming the actual problem");
+});
+
+// --- Scenario: maxBytes out of range ---------------------------------------
+
+test("a maxBytes that is zero, negative, fractional or past the ConfigMap limit warns and defaults", () => {
+  const cases = [0, -1, 1.5, DIAGRAM_MAX_BYTES_LIMIT + 1, "524288"];
+  for (const maxBytes of cases) {
+    const { config, errors, warnings } = loadConfig(
+      withDiagram(`  src: ./config/diagram.svg\n  maxBytes: ${JSON.stringify(maxBytes)}\n`),
+    );
+    assert.deepEqual(errors, [], `maxBytes: ${maxBytes}`);
+    assert.match(messageFor(warnings, "diagram.maxBytes"), /between 1 and/);
+    assert.equal(config.diagram.maxBytes, DIAGRAM_DEFAULT_MAX_BYTES, `maxBytes: ${maxBytes}`);
+  }
+});
+
+test("the documented default is half the ConfigMap, and the constants are the only place it is written", () => {
+  assert.equal(DIAGRAM_DEFAULT_MAX_BYTES, DEFAULTS.diagramMaxBytes);
+  assert.equal(DIAGRAM_DEFAULT_MAX_BYTES, 524288);
+  assert.equal(DIAGRAM_MAX_BYTES_LIMIT, 1048576, "the ConfigMap hard limit");
+  assert.equal(DIAGRAM_DEFAULT_MAX_BYTES * 2, DIAGRAM_MAX_BYTES_LIMIT);
+});
+
+test("maxBytes exactly at the ConfigMap limit is accepted", () => {
+  const { config, errors, warnings } = loadConfig(
+    withDiagram(`  src: ./config/diagram.svg\n  maxBytes: ${DIAGRAM_MAX_BYTES_LIMIT}\n`),
+  );
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  assert.equal(config.diagram.maxBytes, DIAGRAM_MAX_BYTES_LIMIT);
+});
+
+// --- Scenario: Renderer without source ------------------------------------
+
+test("a renderer with no source is an error, because there is nothing to render", () => {
+  const { config, errors } = loadConfig(
+    withDiagram(`  renderer:
+    url: https://cdn.example.com/renderer.mjs
+`),
+  );
+
+  assert.match(messageFor(errors, "diagram.source"), /no source is given/);
+  assert.equal(config.diagram, null);
+});
+
+test("source with no renderer is an error, because nothing can draw it", () => {
+  const { config, errors } = loadConfig(withDiagram('  source: "flowchart TD\\n  a --> b"\n'));
+
+  assert.match(messageFor(errors, "diagram.renderer"), /no renderer is configured/);
+  assert.equal(config.diagram, null);
+});
+
+test("a renderer with no url at all is an error", () => {
+  const { config, errors } = loadConfig(
+    withDiagram(`  renderer:
+    options: {theme: dark}
+  source: "flowchart TD"
+`),
+  );
+
+  assert.match(messageFor(errors, "diagram.renderer.url"), /needs a url/);
+  assert.equal(config.diagram, null);
+});
+
+test("a renderer that is not a mapping warns, and the section is then an error for showing nothing", () => {
+  const { config, errors, warnings } = loadConfig(
+    withDiagram('  renderer: "https://cdn.example.com/renderer.mjs"\n  source: "flowchart TD"\n'),
+  );
+
+  assert.match(messageFor(warnings, "diagram.renderer"), /expected a mapping with a url/);
+  assert.deepEqual(paths(errors), ["diagram.src"], "a diagram that cannot show anything is an error");
+  assert.equal(config.diagram, null);
+});
+
+test("a source that is not text is an error rather than a renderer call with junk", () => {
+  const { config, errors } = loadConfig(
+    withDiagram(`  renderer:
+    url: https://cdn.example.com/renderer.mjs
+  source: [flowchart, TD]
+`),
+  );
+
+  assert.match(messageFor(errors, "diagram.source"), /expected the diagram source as text/);
+  assert.equal(config.diagram, null);
+});
+
+test("a renderer and its source are surfaced together, in renderer mode", () => {
+  const { config, errors, warnings } = loadConfig(
+    withDiagram(`  title: Architecture
+  renderer:
+    url: https://cdn.example.com/renderer.mjs
+    options: {theme: dark, securityLevel: strict}
+  source: |
+    flowchart TD
+      ingress[Ingress] --> portal[Portal]
+`),
+  );
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  assert.equal(config.diagram.mode, "renderer");
+  assert.equal(config.diagram.src, null);
+  assert.equal(config.diagram.renderer.url, "https://cdn.example.com/renderer.mjs");
+  assert.deepEqual(
+    config.diagram.renderer.options,
+    { theme: "dark", securityLevel: "strict" },
+    "options reach the renderer verbatim; nothing here allowlists their contents",
+  );
+  assert.equal(
+    config.diagram.source,
+    "flowchart TD\n  ingress[Ingress] --> portal[Portal]\n",
+    "the source is not trimmed: for a whitespace-sensitive language the indentation is the diagram",
+  );
+});
+
+test("renderer options must be a mapping, and anything else is ignored with a warning", () => {
+  for (const options of ["dark", "[dark]", "3"]) {
+    const { config, errors, warnings } = loadConfig(
+      withDiagram(`  renderer:
+    url: /assets/renderer.mjs
+    options: ${options}
+  source: "flowchart TD"
+`),
+    );
+    assert.deepEqual(errors, [], `options: ${options}`);
+    assert.match(messageFor(warnings, "diagram.renderer.options"), /expected a mapping/);
+    assert.equal(config.diagram.renderer.options, null, `options: ${options}`);
+    assert.equal(config.diagram.mode, "renderer", "a bad options mapping does not disable the renderer");
+  }
+});
+
+test("a src alongside a renderer keeps both: the renderer draws, the src is the fallback", () => {
+  const { config, errors, warnings } = loadConfig(
+    withDiagram(`  src: ./config/diagram.svg
+  renderer:
+    url: https://cdn.example.com/renderer.mjs
+  source: "flowchart TD"
+`),
+  );
+
+  // Not a conflict. An operator with no route to their renderer gets the
+  // committed SVG instead of an apology, so dropping either half would throw
+  // away the only graceful degradation this feature has.
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  assert.equal(config.diagram.mode, "renderer");
+  assert.equal(config.diagram.renderer.url, "https://cdn.example.com/renderer.mjs");
+  assert.equal(config.diagram.source, "flowchart TD");
+  assert.equal(config.diagram.src, "./config/diagram.svg", "kept as the fallback");
+});
+
+// --- Scenario: Unsafe renderer URL -----------------------------------------
+//
+// This field decides what code the page imports, so it is the one place in the
+// config where the validation is an allowlist of forms rather than a check for
+// obvious junk.
+
+test("an unsafe renderer url is an error naming the permitted forms", () => {
+  const unsafe = [
+    "http://cdn.example.com/renderer.mjs",
+    "//cdn.example.com/renderer.mjs",
+    "data:text/javascript,export default 1",
+    "blob:https://example.com/0-0",
+    "javascript:alert(1)",
+    "file:///renderer.mjs",
+    "ftp://cdn.example.com/renderer.mjs",
+  ];
+
+  for (const url of unsafe) {
+    const { config, errors } = loadConfig(
+      withDiagram(`  renderer:\n    url: ${JSON.stringify(url)}\n  source: "flowchart TD"\n`),
+    );
+    const message = messageFor(errors, "diagram.renderer.url");
+    assert.match(message, /absolute https:\/\/ URL or a same-origin path/, url);
+    assert.equal(config.diagram, null, `${url} must not reach the view layer`);
+  }
+});
+
+test("the unsafe-url message says why the near misses are refused", () => {
+  const http = loadConfig(
+    withDiagram('  renderer:\n    url: "http://cdn.example.com/r.mjs"\n  source: "x"\n'),
+  );
+  const message = messageFor(http.errors, "diagram.renderer.url");
+  assert.match(message, /http:\/\/ is refused/);
+  assert.match(message, /protocol-relative/);
+  assert.match(message, /data:, blob: and javascript:/);
+});
+
+test("isSafeRendererUrl permits an absolute https URL and a same-origin path, and nothing else", () => {
+  const safe = [
+    "https://cdn.example.com/renderer.mjs",
+    "https://cdn.example.com:8443/renderer.mjs?v=1",
+    "/assets/renderer.mjs",
+    "./renderer.mjs",
+    "renderer.mjs",
+    "../vendor/renderer.mjs",
+  ];
+  for (const url of safe) assert.equal(isSafeRendererUrl(url), true, url);
+
+  const unsafe = [
+    "http://cdn.example.com/renderer.mjs",
+    "HTTP://cdn.example.com/renderer.mjs",
+    "//cdn.example.com/renderer.mjs",
+    "https://",
+    "data:text/javascript,0",
+    "blob:https://example.com/0",
+    "javascript:alert(1)",
+    "JavaScript:alert(1)",
+    "vbscript:msgbox",
+    "file:///renderer.mjs",
+    "ws://cdn.example.com/renderer.mjs",
+    "/\\cdn.example.com/renderer.mjs",
+    "https://cdn.example.com/a b.mjs",
+    "https://cdn.example.com/\nrenderer.mjs",
+    "",
+    "   ",
+    null,
+    undefined,
+    17,
+    {},
+    ["https://cdn.example.com/renderer.mjs"],
+  ];
+  for (const url of unsafe) assert.equal(isSafeRendererUrl(url), false, JSON.stringify(url));
+});
+
+test("a same-origin renderer path is accepted, since self-hosting is the preferred shape", () => {
+  const { config, errors, warnings } = loadConfig(
+    withDiagram('  renderer:\n    url: /assets/renderer.mjs\n  source: "flowchart TD"\n'),
+  );
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  assert.equal(config.diagram.renderer.url, "/assets/renderer.mjs");
+});
+
+test("surrounding whitespace in a renderer url is trimmed, not treated as a different URL", () => {
+  const { config, errors } = loadConfig(
+    withDiagram('  renderer:\n    url: "  https://cdn.example.com/renderer.mjs  "\n  source: "x"\n'),
+  );
+
+  assert.deepEqual(errors, []);
+  assert.equal(config.diagram.renderer.url, "https://cdn.example.com/renderer.mjs");
+});
+
+test("a broken diagram section does not stop the rest of the config being normalized", () => {
+  const { config, errors } = loadConfig(`version: 1
+title: Portal
+diagram:
+  renderer:
+    url: http://cdn.example.com/renderer.mjs
+  source: "flowchart TD"
+${GROUPS_YAML}`);
+
+  assert.deepEqual(paths(errors), ["diagram.renderer.url"]);
+  assert.equal(config.title, "Portal");
+  assert.equal(config.groups[0].items[0].url, "https://b.example.com");
+  assert.equal(config.diagram, null);
 });

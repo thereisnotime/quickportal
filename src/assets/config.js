@@ -33,6 +33,8 @@ export const DEFAULTS = Object.freeze({
   collapsed: false,
   embed: false,
   maxFrames: 4,
+  diagramTitle: "Diagram",
+  diagramMaxBytes: 512 * 1024,
 });
 
 /**
@@ -47,6 +49,23 @@ export const FRAME_DEFAULT_MAX = DEFAULTS.maxFrames;
  * is treated as one: a warning and the default.
  */
 export const FRAME_MAX = 16;
+
+/**
+ * The default cap on an inlined diagram, named as in the design so diagram.js
+ * and this module cannot drift apart. `diagram.maxBytes` overrides it.
+ */
+export const DIAGRAM_DEFAULT_MAX_BYTES = DEFAULTS.diagramMaxBytes;
+
+/**
+ * The largest cap a config may ask for, which is the ConfigMap hard limit.
+ *
+ * The cap is not arbitrary: the diagram is delivered in the same 1MiB ConfigMap
+ * as the config itself, so a cap above that limit describes a file the cluster
+ * would refuse to store in the first place. Half of it is the default because
+ * the other half has to hold the config, and because inlining a megabyte of SVG
+ * makes the page janky on a phone long before the cluster complains.
+ */
+export const DIAGRAM_MAX_BYTES_LIMIT = 1024 * 1024;
 
 /**
  * Permission tokens accepted in an item's `allow`, which is passed to the
@@ -103,12 +122,15 @@ const ROOT_KEYS = [
   "layout",
   "reload",
   "embedding",
+  "diagram",
   "groups",
   "sets",
 ];
 const LAYOUT_KEYS = ["density", "minCardWidth"];
 const RELOAD_KEYS = ["interval"];
 const EMBEDDING_KEYS = ["maxFrames", "docsUrl"];
+const DIAGRAM_KEYS = ["title", "src", "maxBytes", "renderer", "source"];
+const RENDERER_KEYS = ["url", "options"];
 const GROUP_KEYS = ["id", "name", "icon", "collapsed", "items", "groups"];
 const ITEM_KEYS = [
   "id",
@@ -236,6 +258,7 @@ export function normalizeConfig(raw) {
     theme: optionalEnum(raw.theme, THEMES, "theme", DEFAULTS.theme, ctx),
     layout: normalizeLayout(raw.layout, ctx),
     reload: normalizeReload(raw.reload, ctx),
+    diagram: normalizeDiagram(raw.diagram, ctx),
     groups: normalizeGroups(raw.groups, "groups", [], 1, ctx),
     embedding: null,
     sets: [],
@@ -394,6 +417,236 @@ function readDocsUrl(raw, embedding, ctx) {
     return;
   }
   embedding.docsUrl = url;
+}
+
+// ---------------------------------------------------------------------------
+// Diagram
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize the optional `diagram` section.
+ *
+ * Null means "no diagram", which is exactly what the view layer needs to know
+ * to render no panel and fetch nothing: there is never a half-configured object
+ * to inspect, and a config without the section behaves as it did before the
+ * section existed.
+ *
+ * When a diagram is configured the result is complete, including `mode`, so the
+ * panel does not have to work out which of the two ways in applies:
+ *
+ *   {title, src, maxBytes, renderer: {url, options}|null, source, mode}
+ *
+ * `mode` is "src" for a pre-rendered SVG and "renderer" for source rendered in
+ * the page. There are only those two, because a section that configures neither
+ * cannot show anything and is reported as an error instead.
+ */
+function normalizeDiagram(raw, ctx) {
+  if (raw === undefined || raw === null) return null;
+  if (!isPlainObject(raw)) {
+    ctx.warnings.push(
+      issue("diagram", `expected a mapping, got ${typeName(raw)}; no diagram is shown`),
+    );
+    return null;
+  }
+  warnUnknownKeys(raw, DIAGRAM_KEYS, "diagram", ctx);
+
+  // Counted so the "nothing to show" error below is only reported when nothing
+  // more specific has been said already. Telling an author their renderer URL
+  // is unsafe *and* that they configured no diagram is noise.
+  const errorsBefore = ctx.errors.length;
+
+  const diagram = {
+    title: readDiagramTitle(raw.title, ctx),
+    src: readDiagramSrc(raw.src, ctx),
+    maxBytes: readDiagramMaxBytes(raw.maxBytes, ctx),
+    renderer: null,
+    source: null,
+    mode: null,
+  };
+
+  const renderer = readRenderer(raw.renderer, ctx);
+  const source = readDiagramSource(raw.source, ctx);
+
+  // A renderer and its source only mean anything together. Either one alone is
+  // a misconfiguration worth saying out loud: a renderer with nothing to render
+  // imports a module for no reason, and source with no renderer is a diagram
+  // the portal has no way to draw. Both are reported against the missing half,
+  // and neither is reported when that half was present but itself broken, since
+  // readRenderer and readDiagramSource have already said so.
+  if (renderer && source === null && raw.source === undefined) {
+    ctx.errors.push(
+      issue(
+        "diagram.source",
+        "a renderer is configured but no source is given; add diagram.source, or drop the " +
+          "renderer and point diagram.src at a pre-rendered SVG",
+      ),
+    );
+  }
+  if (source !== null && renderer === null && raw.renderer === undefined) {
+    ctx.errors.push(
+      issue(
+        "diagram.renderer",
+        "diagram source is given but no renderer is configured to turn it into SVG; add " +
+          "diagram.renderer.url, or render it to SVG yourself and point diagram.src at the result",
+      ),
+    );
+  }
+  if (renderer && source !== null) {
+    diagram.renderer = renderer;
+    diagram.source = source;
+  }
+
+  // Both together is a supported and useful combination, not a conflict: the
+  // renderer draws the diagram, and src is the fallback shown when the renderer
+  // cannot be reached. That is what an operator on a laptop with no route to
+  // their CDN gets instead of an apology, so neither is dropped and there is
+  // nothing to warn about.
+  if (diagram.renderer !== null) {
+    diagram.mode = "renderer";
+  } else if (diagram.src !== null) {
+    diagram.mode = "src";
+  } else {
+    if (ctx.errors.length === errorsBefore) {
+      ctx.errors.push(
+        issue(
+          "diagram.src",
+          "a diagram needs either src naming a pre-rendered SVG, or a renderer and the source " +
+            "to render; this section configures neither, so there is nothing to show",
+        ),
+      );
+    }
+    return null;
+  }
+
+  return diagram;
+}
+
+function readDiagramTitle(value, ctx) {
+  const title = optionalString(value, "diagram.title", DEFAULTS.diagramTitle, ctx);
+  // An empty or blank heading would leave the panel's label pointing at nothing,
+  // so it falls back the same way a missing one does.
+  return isNonEmptyString(title) ? title.trim() : DEFAULTS.diagramTitle;
+}
+
+// The served path of the SVG. An absolute URL is permitted but is not the
+// documented default, because it needs the deployment's img-src/connect-src
+// widened; a scheme that executes rather than fetches is refused outright.
+function readDiagramSrc(value, ctx) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") {
+    ctx.errors.push(
+      issue("diagram.src", `src must be the path of an SVG file, got ${typeName(value)}`),
+    );
+    return null;
+  }
+  const src = value.trim();
+  const lower = src.toLowerCase();
+  if (BLOCKED_SCHEMES.some((scheme) => lower.startsWith(scheme))) {
+    ctx.errors.push(issue("diagram.src", `${src.split(":")[0]}: URLs are not allowed as a diagram src`));
+    return null;
+  }
+  if (!isUsableUrl(src)) {
+    ctx.errors.push(issue("diagram.src", `"${src}" is not a path or URL`));
+    return null;
+  }
+  return src;
+}
+
+function readDiagramMaxBytes(value, ctx) {
+  if (value === undefined || value === null) return DIAGRAM_DEFAULT_MAX_BYTES;
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > DIAGRAM_MAX_BYTES_LIMIT
+  ) {
+    ctx.warnings.push(
+      issue(
+        "diagram.maxBytes",
+        `expected a whole number of bytes between 1 and ${DIAGRAM_MAX_BYTES_LIMIT}, which is what ` +
+          `a ConfigMap can hold, got ${JSON.stringify(value)}; using ${DIAGRAM_DEFAULT_MAX_BYTES}`,
+      ),
+    );
+    return DIAGRAM_DEFAULT_MAX_BYTES;
+  }
+  return value;
+}
+
+function readDiagramSource(value, ctx) {
+  if (value === undefined || value === null) return null;
+  if (!isNonEmptyString(value)) {
+    ctx.errors.push(
+      issue("diagram.source", `expected the diagram source as text, got ${typeName(value)}`),
+    );
+    return null;
+  }
+  // Not trimmed: the source is handed to the renderer as written, and for a
+  // whitespace-sensitive diagram language the indentation is the diagram.
+  return value;
+}
+
+function readRenderer(raw, ctx) {
+  if (raw === undefined || raw === null) return null;
+  if (!isPlainObject(raw)) {
+    ctx.warnings.push(
+      issue(
+        "diagram.renderer",
+        `expected a mapping with a url, got ${typeName(raw)}; no renderer is used`,
+      ),
+    );
+    return null;
+  }
+  warnUnknownKeys(raw, RENDERER_KEYS, "diagram.renderer", ctx);
+
+  const url = raw.url;
+  if (url === undefined || url === null || url === "") {
+    ctx.errors.push(
+      issue("diagram.renderer.url", "a renderer needs a url naming the module to import"),
+    );
+    return null;
+  }
+  if (!isSafeRendererUrl(url)) {
+    ctx.errors.push(
+      issue(
+        "diagram.renderer.url",
+        `${JSON.stringify(url)} is not a renderer this portal will import: the url must be an ` +
+          "absolute https:// URL or a same-origin path. http:// is refused because the module " +
+          "would arrive over a channel anyone on the path can rewrite, a protocol-relative URL " +
+          "because it inherits whichever scheme the page happens to have, and data:, blob: and " +
+          "javascript: because they smuggle the code itself into the config",
+      ),
+    );
+    return null;
+  }
+
+  return { url: String(url).trim(), options: readRendererOptions(raw.options, ctx) };
+}
+
+/**
+ * The renderer's own options, passed through verbatim.
+ *
+ * Nothing here inspects the contents: these are the operator's settings for a
+ * renderer this portal has never seen, so an allowlist could only break a
+ * renderer it has not heard of while protecting nothing -- the renderer's output
+ * goes through the sanitiser regardless of what it was told. The shape is still
+ * checked, because handing a renderer a string where it expects an object is a
+ * failure with no useful message.
+ *
+ * `securityLevel` is the one option worth documenting: a renderer told to trust
+ * its input will happily emit things the sanitiser then removes.
+ */
+function readRendererOptions(value, ctx) {
+  if (value === undefined || value === null) return null;
+  if (!isPlainObject(value)) {
+    ctx.warnings.push(
+      issue(
+        "diagram.renderer.options",
+        `expected a mapping of renderer options, got ${typeName(value)}; ignored`,
+      ),
+    );
+    return null;
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -767,6 +1020,63 @@ export function isFramableUrl(value) {
   if (!isUsableUrl(value)) return false;
   const { protocol } = new URL(String(value).trim(), "http://example.com/");
   return FRAMABLE_PROTOCOLS.includes(protocol);
+}
+
+/**
+ * True for a URL the page may `import()` as a diagram renderer.
+ *
+ * THIS IS THE MOST SECURITY-RELEVANT FIELD IN THE WHOLE CONFIG. Every other URL
+ * here is navigated to, framed or fetched; this one names code that runs inside
+ * the page, with the page's origin, its storage and its DOM. So it is validated
+ * narrowly, by what is permitted rather than by what is known to be bad:
+ *
+ *   - an absolute `https://` URL, so the module cannot be rewritten in transit
+ *     by anyone on the network path, and
+ *   - a relative path, which resolves against the page's own origin and so
+ *     names something the deployment already serves.
+ *
+ * Everything else is refused, including the cases that look harmless:
+ * `http://` (rewritable in transit), `//host/mod.mjs` (protocol-relative, so it
+ * inherits whichever scheme the page has and silently becomes the http case on
+ * a plain-http deployment), and `data:`, `blob:` and `javascript:`, which carry
+ * the code in the config itself and would turn a config edit into code
+ * execution with no origin to add to `script-src` and nothing for an operator
+ * to review. A backslash is refused because URL parsers disagree about whether
+ * it separates a path, which is how `/\host/mod.mjs` becomes a host.
+ *
+ * The CSP is still the enforcement point -- the import fails unless the
+ * deployment lists the origin in `script-src` -- but the config must not be the
+ * place where a bad origin gets in unremarked.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isSafeRendererUrl(value) {
+  if (!isNonEmptyString(value)) return false;
+  const candidate = value.trim();
+  if (/[\s\u0000-\u001f\\]/.test(candidate)) return false;
+  // Protocol-relative, checked before the scheme test, which it would pass by
+  // having no scheme at all.
+  if (candidate.startsWith("//")) return false;
+
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(candidate)) {
+    let url;
+    try {
+      url = new URL(candidate);
+    } catch {
+      return false;
+    }
+    return url.protocol === "https:" && url.host !== "";
+  }
+
+  // No scheme, so it is relative and resolves against the page's own origin.
+  // The base is a reserved example domain and never contacted.
+  try {
+    new URL(candidate, "https://example.com/");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function readUrl(value, path, ctx) {

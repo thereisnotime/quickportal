@@ -10,6 +10,7 @@ const KEY_THEME = "quickportal.theme";
 const KEY_COLLAPSED = "quickportal.collapsed";
 const KEY_QUERY = "quickportal.query";
 const KEY_OPEN_TABS = "quickportal.openTabs";
+const KEY_DIAGRAM_OPEN = "quickportal.diagramOpen";
 
 const THEMES = ["auto", "light", "dark"];
 
@@ -202,6 +203,33 @@ export function setOpenTabs(ids, storage) {
   }
   if (clean.length === 0) return removeRaw(KEY_OPEN_TABS, storage);
   return writeRaw(KEY_OPEN_TABS, JSON.stringify(clean), storage);
+}
+
+/**
+ * Whether the diagram panel was left open, remembered like the collapse state.
+ *
+ * Closed is the default, and deliberately so: the diagram is fetched lazily on
+ * first open, so a viewer who has never opened the panel costs nothing, and a
+ * browser with no storage gets the same quiet start.
+ *
+ * @param {object} [storage]
+ * @returns {boolean}
+ */
+export function getDiagramOpen(storage) {
+  return readRaw(KEY_DIAGRAM_OPEN, storage) === "true";
+}
+
+/**
+ * A closed panel is removed rather than stored, so a fresh browser and a panel
+ * the viewer closed behave the same.
+ *
+ * @param {boolean} open
+ * @param {object} [storage]
+ * @returns {boolean} whether it was remembered.
+ */
+export function setDiagramOpen(open, storage) {
+  if (!open) return removeRaw(KEY_DIAGRAM_OPEN, storage);
+  return writeRaw(KEY_DIAGRAM_OPEN, "true", storage);
 }
 
 /**

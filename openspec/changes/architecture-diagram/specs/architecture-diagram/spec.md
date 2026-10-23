@@ -90,9 +90,21 @@ The portal MAY import a renderer module named by the operator and use it to turn
 - **WHEN** a renderer URL is configured and the deployment permits that origin in `script-src`
 - **THEN** the source from the config is rendered, sanitised and displayed
 
-#### Scenario: Renderer unreachable
-- **WHEN** the renderer's origin cannot be reached, such as on a machine with no route to it
+#### Scenario: Renderer unreachable, with no fallback configured
+- **WHEN** the renderer's origin cannot be reached, such as on a machine with no route to it, and no `src` is configured
 - **THEN** the panel states that the diagram needs that origin, and the bookmarks are unaffected
+
+#### Scenario: Renderer unreachable, with a committed SVG configured
+- **WHEN** the renderer cannot be imported and `src` names a pre-rendered SVG
+- **THEN** that SVG is shown instead, with a notice saying it is the committed copy and why, because an operator with no route to their renderer should get their diagram rather than an apology
+
+#### Scenario: Renderer loaded but rejected the source
+- **WHEN** the renderer imports successfully and then fails on the diagram source
+- **THEN** the failure is reported and a configured `src` is NOT substituted, because showing an older picture would hide the author's mistake
+
+#### Scenario: Rendered output exceeds the size limit
+- **WHEN** the renderer produces an SVG larger than `maxBytes`
+- **THEN** it is not sanitised or displayed, and the panel names the actual and permitted sizes, as it does for an oversized file
 
 #### Scenario: Renderer configured but not permitted
 - **WHEN** a renderer URL is configured and the deployment's policy forbids it

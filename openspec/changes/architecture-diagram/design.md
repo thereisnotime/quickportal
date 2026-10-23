@@ -126,6 +126,33 @@ When the renderer cannot be reached, the panel says the diagram needs that
 origin and the bookmarks are untouched, which is the behaviour an offline
 laptop should get.
 
+### A renderer and a committed SVG together, as graceful degradation
+
+`src` and `renderer` are not alternatives to choose between. Configured
+together, the renderer draws the diagram and `src` is the fallback shown when
+the renderer could not be imported.
+
+That is the only graceful degradation this feature has, and it is worth having:
+a page that renders its diagram from a CDN shows an apology on a laptop with no
+route to that CDN, which is what the page this capability replaces does today.
+With both configured it shows the committed SVG instead, and says that is what
+it is showing and why.
+
+The fallback triggers only on a failure to **import** the renderer, not on a
+renderer that loaded and then threw. A renderer that ran and rejected the source
+is a broken diagram definition, and silently showing an older picture instead
+would hide the author's mistake.
+
+The panel owns the fallback; `diagram.js` only has to make the two failures
+distinguishable in its error text.
+
+### `maxBytes` caps rendered output too
+
+It began as a fetch-time cap, which left a renderer free to turn three lines of
+source into a ten megabyte SVG. `renderSource` enforces the same limit on what
+it produces, before sanitising, and reports it the same way an oversized file is
+reported so the panel can treat them alike.
+
 ### Renderer output needs its CSS, and the CSP must not be loosened for it
 
 A renderer emits an SVG carrying a `<style>` element: mermaid's output is a pile
@@ -205,7 +232,7 @@ An operator moving from a page that rendered a diagram language in the browser r
 
 ## Open Questions
 
-- Whether `maxBytes` should default to 512KiB or lower. 512KiB is half the ConfigMap and already enough to make inlining slow on a phone.
+- Whether `maxBytes` should default to 512KiB or lower. 512KiB is half the ConfigMap and already enough to make inlining slow on a phone. It now also bounds renderer output, where the right number may well be different.
 - Whether to support more than one diagram. One panel covers the use case; several would want naming, ordering and a selector, and that can wait for someone who needs it.
 - Whether the renderer's `options` should be passed through verbatim or
   allowlisted. Verbatim for now, since they are the operator's own settings and

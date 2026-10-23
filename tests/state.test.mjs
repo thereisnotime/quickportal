@@ -15,6 +15,8 @@ import {
   setQuery,
   getOpenTabs,
   setOpenTabs,
+  getDiagramOpen,
+  setDiagramOpen,
   createMemoryStorage,
 } from "../src/assets/state.js";
 
@@ -284,4 +286,54 @@ test("the open tab set survives storage being unavailable or full", () => {
   const full = fullStorage();
   assert.equal(setOpenTabs(["apps/dashboards"], full), false, "a failed write is reported");
   assert.deepEqual(getOpenTabs(full), []);
+});
+
+// ---------------------------------------------------------------------------
+// The diagram panel's open state, remembered like the collapse state
+// ---------------------------------------------------------------------------
+
+test("the diagram panel's open state round-trips and defaults to closed", () => {
+  const storage = createMemoryStorage();
+  assert.equal(getDiagramOpen(storage), false, "nothing remembered means closed, so nothing is fetched");
+
+  assert.equal(setDiagramOpen(true, storage), true);
+  assert.equal(getDiagramOpen(storage), true);
+});
+
+test("a closed panel is removed rather than stored", () => {
+  const storage = createMemoryStorage();
+  setDiagramOpen(true, storage);
+
+  assert.equal(setDiagramOpen(false, storage), true);
+  assert.equal(storage.getItem("quickportal.diagramOpen"), null, "the key is gone, not a stored false");
+  assert.equal(getDiagramOpen(storage), false);
+});
+
+test("junk under the diagram key reads as closed", () => {
+  const storage = createMemoryStorage();
+  for (const junk of ["false", "1", "yes", "{}", ""]) {
+    storage.setItem("quickportal.diagramOpen", junk);
+    assert.equal(getDiagramOpen(storage), false, `junk: ${junk}`);
+  }
+});
+
+test("a non-boolean open state is coerced rather than rejected", () => {
+  const storage = createMemoryStorage();
+  assert.equal(setDiagramOpen("yes", storage), true);
+  assert.equal(getDiagramOpen(storage), true);
+
+  assert.equal(setDiagramOpen(0, storage), true);
+  assert.equal(getDiagramOpen(storage), false);
+});
+
+test("the diagram panel state survives storage being unavailable or full", () => {
+  const hostile = hostileStorage();
+  assert.equal(getDiagramOpen(hostile), false);
+  assert.equal(setDiagramOpen(true, hostile), false);
+
+  const full = fullStorage();
+  assert.equal(setDiagramOpen(true, full), false, "a failed write is reported");
+  assert.equal(getDiagramOpen(full), false);
+
+  assert.equal(getDiagramOpen(null), false, "no storage at all is the closed default");
 });
