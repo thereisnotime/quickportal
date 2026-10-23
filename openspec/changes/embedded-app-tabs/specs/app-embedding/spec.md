@@ -23,8 +23,12 @@ An embedded item SHALL always offer opening in a browser tab as well, because fr
 - **THEN** a distinct, keyboard reachable action opens it in a browser tab instead
 
 #### Scenario: Nothing useful has appeared
-- **WHEN** a mounted frame has shown nothing for several seconds
-- **THEN** a dismissible overlay offers opening in a browser tab and links to the documented header requirements, worded as possible causes rather than a diagnosis
+- **WHEN** a mounted frame has been up for several seconds
+- **THEN** a dismissible, non-blocking strip at an edge of the frame area offers opening in a browser tab and links to the documented header requirements, worded conditionally rather than as a diagnosis
+
+#### Scenario: A working app is never obscured
+- **WHEN** the frame actually loaded and the user is using the embedded app
+- **THEN** that strip MUST NOT cover, dim or interrupt it, because the portal cannot tell a loaded frame from a refused one and will therefore show the strip over working apps too
 
 ### Requirement: The portal does not claim to know whether framing was refused
 The portal MUST NOT report that a target refused framing, because a cross-origin frame exposes neither its status nor its content and a wrong accusation sends the user to change headers for no reason.
