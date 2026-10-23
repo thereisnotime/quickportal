@@ -57,5 +57,5 @@
 
 - [x] 8.1 Run the leak sweep over the whole tree and review what the first push will contain
 - [x] 8.2 Create the public repository and push
-- [ ] 8.3 Verify the install path end to end from the published ref in a throwaway namespace, including a config edit picked up live
-- [ ] 8.4 Tag `v0.1.0` and write release notes naming the kustomize ref users should pin
+- [x] 8.3 Verify the install path end to end from the published ref in a throwaway namespace, including a config edit picked up live
+- [x] 8.4 Tag `v0.1.0` and write release notes naming the kustomize ref users should pin
