@@ -1,0 +1,11 @@
+# local agent / editor tooling, never published
+.claude/
+CLAUDE.md
+AGENTS.md
+.idea/
+.vscode/
+
+# local scratch
+*.local
+*.log
+node_modules/
