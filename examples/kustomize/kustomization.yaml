@@ -10,6 +10,12 @@
 # Copy this directory out, point the resource at a tag, drop your config in
 # config.yaml and edit the host in ingress.yaml. Every hostname here is a
 # reserved placeholder and has to be replaced.
+#
+# This overlay does NOT permit embedding: the portal keeps `frame-src 'none'`
+# and items open in browser tabs. If you want items to open as tabs inside the
+# portal, see embedding/ next to this file, which is this overlay plus the one
+# ConfigMap patch that widens the policy. It is kept separate on purpose, so
+# that copying the normal example cannot switch embedding on by accident.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

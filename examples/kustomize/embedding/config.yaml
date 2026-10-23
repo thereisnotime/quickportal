@@ -1,0 +1,30 @@
+# The config half of the embedding switch.
+#
+# `embed: true` makes the item open as a tab inside the portal. It only works
+# if the item's origin is listed in the frame-src patch in kustomization.yaml
+# next to this file, and if the app itself permits being framed.
+#
+# Items without `embed` keep the default behaviour and open in a browser tab,
+# which is also still available as a secondary action on an embedded item.
+version: 1
+title: Embedding example
+groups:
+  - name: Embedded
+    items:
+      # Origin https://dashboards.example.com -- listed in the patch.
+      - name: Dashboards
+        url: https://dashboards.example.com
+        icon: auto
+        embed: true
+      # Origin https://logs.example.org -- listed in the patch. Note that the
+      # path is irrelevant to the policy: the ORIGIN is what frame-src matches,
+      # so listing the origin covers every path on that host.
+      - name: Logs
+        url: https://logs.example.org/explore
+        icon: auto
+        embed: true
+  - name: Not embedded
+    items:
+      # No `embed`, so this opens in a browser tab and needs no policy change.
+      - name: Status
+        url: https://status.example.org

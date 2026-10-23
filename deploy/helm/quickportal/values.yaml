@@ -79,6 +79,67 @@ config:
         icon: "☀"
         targets: [infra]
 
+# Embedding: letting an item open as a tab inside the portal instead of in a
+# browser tab.
+#
+# This is the DEPLOYMENT half of the switch, and it is off. Turning embedding
+# on takes two changes, and each one alone looks broken in the same way -- an
+# empty rectangle where the app should be:
+#
+#   1. frameOrigins below, which widens the portal's own
+#      Content-Security-Policy so the browser will let the portal frame those
+#      origins at all. Empty means `frame-src 'none'`: no framing, which is
+#      exactly what the chart rendered before this setting existed.
+#   2. `embed: true` on the items in config.inline (or in your own ConfigMap),
+#      which is what makes the portal offer to open them as tabs.
+#
+# Set only (2) and the browser refuses the frame under this policy; the page
+# can see its own CSP violation and says so. Set only (1) and nothing changes.
+#
+# A third condition is not ours to set: the app being embedded must itself
+# permit framing, with `frame-ancestors` that include the portal's origin and
+# no `X-Frame-Options: DENY`. The portal cannot detect whether it does.
+#
+# Only `frame-src` is configurable. `frame-ancestors 'none'`, which is who may
+# frame the PORTAL, stays as it is: a different question, and embedding does
+# not need it relaxed.
+embedding:
+  # Origins the portal is permitted to frame. Rendered verbatim as the
+  # `frame-src` value: exactly these and nothing else is added.
+  #
+  # An entry is scheme://host[:port], with no trailing slash and no path.
+  # Anything else is refused at template time rather than at request time,
+  # because the request-time symptom is an empty frame with no cause named.
+  #
+  #   frameOrigins:
+  #     - https://dashboards.example.com
+  #     - https://logs.example.org
+  #     - https://*.example.com        # the wildcard, if you mean it
+  #
+  # Things that are easy to get subtly wrong:
+  #
+  #   * a path is matched as a prefix, so `https://app.example.com/grafana`
+  #     does NOT cover an item at another path on that host. List the origin.
+  #   * a subdomain is a different origin; `https://example.com` does not
+  #     permit `https://a.example.com`.
+  #   * `http://` origins are blocked as mixed content when the portal is
+  #     served over https, whatever this policy says.
+  #   * `https:` and `*` are refused on purpose. They would make embedding
+  #     "just work" by permitting the portal to frame anything it can reach,
+  #     and that weakens the policy for everyone to help the few who opt in.
+  #
+  # The chart refuses to render the half-configured state it can see: if
+  # config.inline marks an item `embed: true` and no entry here permits that
+  # item's origin, `helm template` fails and names the missing origin. That is
+  # deliberately louder than the browser, whose version of the same mistake is
+  # an empty rectangle. It cannot be checked when you point
+  # config.existingConfigMap at a ConfigMap the chart does not render.
+  #
+  # Check the result rather than the intent:
+  #
+  #   helm template quickportal deploy/helm/quickportal | grep -A1 frame-src.inc
+  frameOrigins: []
+
 service:
   type: ClusterIP
   port: 80

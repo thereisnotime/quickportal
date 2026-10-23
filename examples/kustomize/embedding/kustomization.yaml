@@ -1,0 +1,90 @@
+# Example overlay for YOUR repository: QuickPortal with embedding turned on.
+#
+# Embedding needs TWO changes and neither works alone:
+#
+#   1. this overlay, which widens the portal's own Content-Security-Policy so
+#      the browser will let the portal frame those origins at all, and
+#   2. `embed: true` on the items in config.yaml, which is what makes the
+#      portal offer to open them as tabs instead of browser tabs.
+#
+# Both are below. If you copy only one, the symptom is a blank rectangle:
+# with (2) alone the browser refuses the frame under this policy and the page
+# reports it; with (1) alone nothing changes at all.
+#
+# A third condition is not ours and cannot be set from here: the app you embed
+# must itself permit being framed, by sending `frame-ancestors` that include
+# the portal's origin and no `X-Frame-Options: DENY`. The portal cannot detect
+# whether it does; see docs for what that failure looks like.
+#
+# As with examples/kustomize, this cannot be rendered from inside the
+# QuickPortal repository -- the QuickPortal kustomization is at the repository
+# root, so an overlay stored beneath it would reference its own parent and
+# kustomize rejects that as a cycle. Copy this directory into your repository,
+# where there is no such relationship, and point the resource at a tag.
+#
+# Every hostname here is a reserved placeholder and has to be replaced.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: quickportal
+
+resources:
+  # Pin a tag, never a branch.
+  - https://git.example.com/example-org/quickportal.git//?ref=v0.1.0
+
+configMapGenerator:
+  # Your config, with the items that should open inside the portal marked
+  # `embed: true`. Every URL marked that way has to be covered by an origin in
+  # the patch below.
+  - name: quickportal-config
+    behavior: replace
+    files:
+      - config.yaml
+    options:
+      disableNameSuffixHash: true
+
+patches:
+  # Widen `frame-src` by replacing ONE key of the server-config ConfigMap.
+  #
+  # Only frame-src.inc is replaced. security-headers.inc, which holds the
+  # actual Content-Security-Policy, is left exactly as QuickPortal ships it, so
+  # upgrades keep bringing you policy fixes and there is never a second copy of
+  # the policy to drift. The ConfigMap is content-hashed, so patching it rolls
+  # the pod by itself.
+  #
+  # The value is a space-separated list of ORIGINS: scheme://host[:port], no
+  # trailing slash and no path. Mistakes here are silent and all look alike --
+  # an empty frame:
+  #
+  #   * `https://app.example.com/grafana` is matched as a path prefix, so an
+  #     item at a different path on that host will not match. Use the origin.
+  #   * a subdomain is a different origin; `https://example.com` does not
+  #     permit `https://a.example.com`. Write `https://*.example.com` if the
+  #     wildcard is what you mean.
+  #   * `http://` origins are blocked as mixed content when the portal itself
+  #     is served over https, whatever this says.
+  #   * never `https:` or `*`: that permits framing anything and there is then
+  #     no point having the directive.
+  #
+  # Verify what you shipped rather than what you meant to ship:
+  #
+  #   kustomize build . | grep -A2 'frame-src.inc'
+  #   # and against the running pod:
+  #   kubectl --context <your-context> -n quickportal port-forward svc/quickportal 8080:80
+  #   curl -sI http://127.0.0.1:8080/ | tr ';' '\n' | grep frame-
+  #
+  # `frame-ancestors 'none'` is untouched and must stay untouched: that is who
+  # may frame the portal, which is a different question from who the portal may
+  # frame, and nothing about embedding needs it relaxed.
+  - target:
+      version: v1
+      kind: ConfigMap
+      name: quickportal-server-config
+    patch: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: quickportal-server-config
+      data:
+        frame-src.inc: |
+          set $quickportal_frame_src "https://dashboards.example.com https://logs.example.org";

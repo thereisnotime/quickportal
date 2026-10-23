@@ -27,6 +27,22 @@ Your config:
   will not become ready until the ConfigMap {{ include "quickportal.configMapName" . }} exists.
 {{- end }}
 
+Embedding (items opening as tabs inside the portal):
+{{- $frameSrc := include "quickportal.frameSrc" . }}
+{{- if eq $frameSrc "'none'" }}
+  OFF. The served policy is `frame-src 'none'`, so a browser will refuse to
+  frame anything. Marking an item `embed: true` cannot work on its own: set
+  embedding.frameOrigins to the origins you want to embed as well.
+{{- else }}
+  The policy permits framing: frame-src {{ $frameSrc }}
+
+  That is the deployment half only. An item still opens as a tab only if it is
+  marked `embed: true` in your config, and only if its own origin is one of the
+  above -- an origin is scheme://host[:port], and a path or a sibling subdomain
+  will not match. The app being embedded must also permit framing, which is not
+  something this chart or the portal can set or detect.
+{{- end }}
+
 Editing the config does not restart the pod. kubelet needs up to about a minute
 to project the change into the volume, and the page then picks it up on its next
 ETag poll (every 30s, unless you set reload.interval in the config).

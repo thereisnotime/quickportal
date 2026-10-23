@@ -41,6 +41,7 @@ jobs:
           node tools/validate-config.mjs --strict \
             examples/config/*.yaml \
             examples/kustomize/config.yaml \
+            examples/kustomize/embedding/config.yaml \
             deploy/kustomize/base/config/config.yaml
 
       - name: A broken config is rejected
@@ -131,7 +132,12 @@ jobs:
     name: Manifests
     runs-on: ubuntu-24.04
     steps:
+      # Full history and tags: the embedding checks below compare what this
+      # branch renders and serves against the v0.1.0 tag, and a shallow
+      # checkout has neither the tag nor the tree behind it.
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: azure/setup-helm@v5.0.1
         with:
@@ -204,6 +210,10 @@ jobs:
       - name: Helm chart
         run: |
           helm lint deploy/helm/quickportal --strict
+          # And with the embedding switch on, which is a different code path
+          # through the server-config template.
+          helm lint deploy/helm/quickportal --strict \
+            --set 'embedding.frameOrigins={https://dashboards.example.com}'
           helm template quickportal deploy/helm/quickportal > /dev/null
           helm template quickportal deploy/helm/quickportal \
             --set ingress.enabled=true \
@@ -237,4 +247,480 @@ jobs:
               print(f"::error::same filenames, different contents: {drift}")
               sys.exit(1)
           print(f"both ship {len(k)} identical files")
+          PY
+
+      # ------------------------------------------------------------------
+      # Embedding: the deployment half of the switch.
+      #
+      # `frame-src` is configurable so that an operator who has decided to
+      # embed other apps can permit it. Everything below exists to stop that
+      # configurability costing anything to the people who never use it: the
+      # default must keep forbidding framing, byte for byte, in the rendered
+      # manifests and on the wire. The comparison is against the v0.1.0 tag
+      # rather than against a checked-in fixture, because a fixture drifts
+      # along with the code it is meant to be guarding.
+      # ------------------------------------------------------------------
+
+      - name: The default policy is byte-identical to v0.1.0
+        run: |
+          python3 - <<'PY'
+          import re, subprocess, sys
+
+          def live(text):
+              """Directive lines only. A commented-out example is not configuration, and
+              reading one as if it were is exactly the mistake this file warns about."""
+              return [l.strip() for l in text.splitlines()
+                      if l.strip() and not l.strip().startswith("#")]
+
+          def csp(text):
+              for line in live(text):
+                  m = re.search(r'add_header Content-Security-Policy "([^"]*)"', line)
+                  if m:
+                      return m.group(1)
+              sys.exit("::error::no Content-Security-Policy add_header found")
+
+          def frame_src(text):
+              hits = [re.match(r'set \$quickportal_frame_src "([^"]*)";$', l) for l in live(text)]
+              hits = [h for h in hits if h]
+              if len(hits) != 1:
+                  sys.exit(f"::error::frame-src.inc must contain exactly one `set $quickportal_frame_src` directive, found {len(hits)}")
+              return hits[0].group(1)
+
+          base = subprocess.run(["git", "show", "v0.1.0:deploy/kustomize/base/nginx/security-headers.inc"],
+                                capture_output=True, text=True, check=True).stdout
+          head = open("deploy/kustomize/base/nginx/security-headers.inc").read()
+          inc = open("deploy/kustomize/base/nginx/frame-src.inc").read()
+
+          shipped = frame_src(inc)
+          effective = csp(head).replace("$quickportal_frame_src", shipped)
+          want = csp(base)
+          print("  v0.1.0   :", want)
+          print("  effective:", effective)
+          problems = []
+          if shipped != "'none'":
+              problems.append(f"frame-src.inc ships {shipped!r}; the shipped default must be 'none'")
+          if effective != want:
+              problems.append("the default policy is no longer byte-identical to v0.1.0")
+          if "frame-ancestors 'none'" not in csp(head):
+              problems.append("frame-ancestors 'none' is gone from the policy")
+          if csp(head).count("frame-src") != 1:
+              problems.append("frame-src appears more than once in the policy")
+          # The chart rewrites this exact line. If it is not unique, it rewrites the
+          # wrong thing, or an example in a comment.
+          sentinel = "set $quickportal_frame_src \"'none'\";"
+          if inc.count(sentinel) != 1:
+              problems.append(f"{sentinel!r} must appear exactly once in frame-src.inc; the chart rewrites that line")
+          if problems:
+              for p in problems:
+                  print("::error::" + p)
+              sys.exit(1)
+          print("  default policy is byte-identical to v0.1.0, and frame-src is the only configurable directive")
+          PY
+
+      - name: The default render is v0.1.0 plus the switch and nothing else
+        run: |
+          rm -rf "$RUNNER_TEMP/v010"
+          mkdir -p "$RUNNER_TEMP/v010"
+          git archive v0.1.0 | tar -x -C "$RUNNER_TEMP/v010"
+          ( cd "$RUNNER_TEMP/v010" && kustomize build . ) > "$RUNNER_TEMP/render-v010.yaml"
+          kustomize build . > "$RUNNER_TEMP/render-head.yaml"
+          python3 - "$RUNNER_TEMP/render-v010.yaml" "$RUNNER_TEMP/render-head.yaml" <<'PY'
+          import sys, yaml, re, difflib
+
+          def docs(p):
+              return [d for d in yaml.safe_load_all(open(p)) if d]
+
+          def key(d):
+              n = d["metadata"]["name"]
+              n = re.sub(r"-[0-9a-z]{10}$", "", n)
+              return (d["kind"], n)
+
+          def norm(s):
+              # kustomize rewrites hashed ConfigMap references; compare shape, not hash.
+              return re.sub(r"(quickportal-(?:app|server-config))-[0-9a-z]{10}", r"\1", s)
+
+          old, new = docs(sys.argv[1]), docs(sys.argv[2])
+          o = {key(d): d for d in old}
+          n = {key(d): d for d in new}
+          problems = []
+          if set(o) != set(n):
+              problems.append(f"document set changed: only-v0.1.0={sorted(set(o)-set(n))} only-HEAD={sorted(set(n)-set(o))}")
+
+          # Documents that may legitimately differ, and nothing else may.
+          ALLOWED = {("ConfigMap", "quickportal-app"), ("ConfigMap", "quickportal-server-config")}
+
+          for k in sorted(set(o) & set(n)):
+              if k in ALLOWED:
+                  continue
+              a = norm(yaml.safe_dump(o[k], sort_keys=True))
+              b = norm(yaml.safe_dump(n[k], sort_keys=True))
+              if a != b:
+                  problems.append(f"{k[0]}/{k[1]} is not byte-identical to v0.1.0:\n" +
+                                  "".join(difflib.unified_diff(a.splitlines(1), b.splitlines(1), "v0.1.0", "HEAD")))
+              else:
+                  print(f"  {k[0]}/{k[1]}: identical to v0.1.0")
+
+          # The nginx files: comments may change, directives may not, except for the two
+          # lines this feature is allowed to touch.
+          oc = o[("ConfigMap", "quickportal-server-config")].get("data", {})
+          nc = n[("ConfigMap", "quickportal-server-config")].get("data", {})
+          added = set(nc) - set(oc)
+          removed = set(oc) - set(nc)
+          if removed:
+              problems.append(f"nginx files removed since v0.1.0: {sorted(removed)}")
+          if added != {"frame-src.inc"}:
+              problems.append(f"unexpected nginx files added since v0.1.0: {sorted(added - {'frame-src.inc'})}")
+
+          def directives(text):
+              out = []
+              for line in text.splitlines():
+                  s = line.strip()
+                  if s and not s.startswith("#"):
+                      out.append(s)
+              return out
+
+          PERMITTED = {
+              ("default.conf", "+", "include /etc/nginx/conf.d/frame-src.inc;"),
+          }
+          for name in sorted(set(oc) & set(nc)):
+              a, b = directives(oc[name]), directives(nc[name])
+              if a == b:
+                  print(f"  {name}: directives identical to v0.1.0")
+                  continue
+              sm = difflib.SequenceMatcher(None, a, b)
+              for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                  if tag == "equal":
+                      continue
+                  if tag == "insert" and all((name, "+", x) in PERMITTED for x in b[j1:j2]):
+                      print(f"  {name}: permitted added directive(s) {b[j1:j2]}")
+                      continue
+                  if tag == "replace" and i2 - i1 == 1 and j2 - j1 == 1:
+                      # The only permitted rewrite is the frame-src value in the CSP, and
+                      # only to the variable the deployment sets. Everything else in the
+                      # policy, frame-ancestors above all, has to be untouched.
+                      before, after = a[i1], b[j1]
+                      if (before.replace("frame-src 'none'", "frame-src $quickportal_frame_src") == after
+                              and "frame-src 'none'" in before):
+                          print(f"  {name}: frame-src made configurable, rest of the policy byte-identical")
+                          continue
+                  problems.append(f"{name}: unpermitted directive change\n  v0.1.0: {a[i1:i2]}\n  HEAD:   {b[j1:j2]}")
+
+          if problems:
+              for p in problems:
+                  print("::error::" + p)
+              sys.exit(1)
+          print("default render is v0.1.0 plus the frame-src switch and nothing else")
+          PY
+
+      # The checks above read files. This one reads the wire, which is what
+      # actually reaches a browser, and is the only way to show that an nginx
+      # variable substituted into the policy produces the same bytes as the
+      # literal it replaced.
+      - name: The served headers are byte-identical to v0.1.0
+        run: |
+          set -euo pipefail
+          img=$(grep -oE 'docker\.io/nginxinc/nginx-unprivileged:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}' \
+                deploy/kustomize/base/deployment.yaml | head -1)
+          echo "serving with $img"
+          root="$RUNNER_TEMP/hdr"; rm -rf "$root"; mkdir -p "$root/html" "$root/cfg" "$root/v010" "$root/embed"
+          # ONE document root for all three servers, on purpose. Only the nginx
+          # config differs between the runs, so a Content-Length difference
+          # would be the app's files changing rather than the policy, and this
+          # check is about the policy.
+          find src -type f -exec cp {} "$root/html/" \;
+          cp deploy/kustomize/base/config/config.yaml "$root/cfg/config.yaml"
+          git archive v0.1.0 | tar -x -C "$root/v010"
+          cp deploy/kustomize/base/nginx/* "$root/embed/"
+          # shellcheck disable=SC2016  # $quickportal_frame_src is nginx's variable, not the shell's
+          printf 'set $quickportal_frame_src "https://dashboards.example.com";\n' > "$root/embed/frame-src.inc"
+
+          free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
+          cleanup() { docker rm -f qp-v010 qp-head qp-embed >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          cleanup
+
+          serve() {
+            local name=$1 port=$2 conf=$3
+            docker run -d --name "$name" -p "127.0.0.1:$port:8080" \
+              -v "$conf:/etc/nginx/conf.d:ro" \
+              -v "$root/html:/usr/share/nginx/html:ro" \
+              -v "$root/cfg:/etc/quickportal:ro" "$img" >/dev/null
+          }
+          # Confirm it is OUR nginx answering on that port and not something
+          # else that happened to be listening. A port collision would
+          # otherwise compare this repository's headers against a stranger's.
+          confirm() {
+            local name=$1 port=$2
+            for _ in $(seq 1 60); do
+              if [ "$(curl -sf "http://127.0.0.1:$port/healthz" || true)" = "ok" ] \
+                 && curl -sfI "http://127.0.0.1:$port/healthz" | grep -qi '^cross-origin-opener-policy: same-origin'; then
+                return 0
+              fi
+              sleep 0.5
+            done
+            echo "::error::$name is not answering on 127.0.0.1:$port with QuickPortal's own responses"
+            docker logs "$name" 2>&1 | tail -20
+            return 1
+          }
+          p_v010=$(free_port); serve qp-v010  "$p_v010"  "$root/v010/deploy/kustomize/base/nginx"
+          p_head=$(free_port); serve qp-head  "$p_head"  "$PWD/deploy/kustomize/base/nginx"
+          p_emb=$(free_port);  serve qp-embed "$p_emb"   "$root/embed"
+          confirm qp-v010 "$p_v010"
+          confirm qp-head "$p_head"
+          confirm qp-embed "$p_emb"
+
+          dump() {
+            for path in / /index.html /app.js /app.css /js-yaml.mjs /config/config.yaml /healthz /no-such-file; do
+              echo "### $path"
+              # Date, ETag, Last-Modified and Server vary per run or per file
+              # and say nothing about the policy.
+              curl -sS -D - -o /dev/null "http://127.0.0.1:$1$path" \
+                | grep -iv '^date:\|^etag:\|^last-modified:\|^server:\|^HTTP/' \
+                | sed 's/\r$//' | sort
+            done
+          }
+          dump "$p_v010" > "$root/v010.txt"
+          dump "$p_head" > "$root/head.txt"
+          dump "$p_emb"  > "$root/embed.txt"
+          if ! diff -u "$root/v010.txt" "$root/head.txt"; then
+            echo "::error::the default now serves different headers from v0.1.0"
+            exit 1
+          fi
+          echo "default headers identical to v0.1.0 across 8 paths"
+          # And with origins set, the only header that may differ is the CSP,
+          # and within it only frame-src.
+          changed=$(diff "$root/head.txt" "$root/embed.txt" | grep -E '^[<>]' | grep -civ 'content-security-policy' || true)
+          if [ "$changed" != 0 ]; then
+            echo "::error::setting frame origins changed a header other than Content-Security-Policy"
+            diff -u "$root/head.txt" "$root/embed.txt" || true
+            exit 1
+          fi
+          if ! grep -q "frame-src https://dashboards.example.com; object-src 'none'; frame-ancestors 'none'" "$root/embed.txt"; then
+            echo "::error::frame-src did not end up listing exactly the configured origin"
+            grep -i content-security-policy "$root/embed.txt" | head -1
+            exit 1
+          fi
+          echo "with origins set, the CSP is the only header that changes, and only in frame-src"
+
+      - name: The embedding overlay example renders, with the default load restrictor
+        run: |
+          set -euo pipefail
+          # The overlay cannot be rendered in place: it references the
+          # repository root, which is its own ancestor, and kustomize calls
+          # that a cycle. Copying it beside a copy of the repository is what a
+          # user's own repository looks like. No --load-restrictor: needing one
+          # would break the install promise.
+          work="$RUNNER_TEMP/overlay"; rm -rf "$work"; mkdir -p "$work/quickportal"
+          # The working tree, not git archive: this has to test the files that
+          # the rest of this job rendered, not the last commit.
+          tar -c --exclude=./.git --exclude=./node_modules . | tar -x -C "$work/quickportal"
+          cp -r examples/kustomize/embedding "$work/embedding"
+          sed -i 's#https://git.example.com/example-org/quickportal.git//?ref=v0.1.0#../quickportal#' \
+            "$work/embedding/kustomization.yaml"
+          ( cd "$work/embedding" && kustomize build . ) > "$RUNNER_TEMP/render-embedding.yaml"
+          kubeconform -strict -summary -schema-location default "$RUNNER_TEMP/render-embedding.yaml"
+          python3 - "$RUNNER_TEMP/render-embedding.yaml" <<'PY'
+          import re, sys, yaml
+
+          docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+          want = 'set $quickportal_frame_src "https://dashboards.example.com https://logs.example.org";'
+          data, cfg = {}, {}
+          for d in docs:
+              if d["kind"] != "ConfigMap":
+                  continue
+              if "server-config" in d["metadata"]["name"]:
+                  data = d.get("data", {})
+              elif d["metadata"]["name"].endswith("quickportal-config"):
+                  cfg = yaml.safe_load(d["data"]["config.yaml"])
+          got = (data.get("frame-src.inc") or "").strip()
+          if got != want:
+              print(f"::error::the overlay did not set frame-src.inc as documented; got {got!r}")
+              sys.exit(1)
+          # The patch must replace one key and leave the policy itself alone.
+          policy = data.get("security-headers.inc", "")
+          if "frame-src $quickportal_frame_src" not in policy or "frame-ancestors 'none'" not in policy:
+              print("::error::the overlay patched security-headers.inc; it must only replace frame-src.inc")
+              sys.exit(1)
+          # Every embedded item's origin has to be covered, or the example
+          # ships the half-state it is supposed to be demonstrating the cure for.
+          origins = re.search(r'"(.*)"', got).group(1).split()
+          missing = []
+          for group in cfg.get("groups", []):
+              for item in group.get("items", []):
+                  if not item.get("embed"):
+                      continue
+                  m = re.match(r"(https?://[^/]+)", item["url"])
+                  if not m or m.group(1) not in origins:
+                      missing.append(item["url"])
+          if missing:
+              print(f"::error::the example embeds items whose origin frame-src does not permit: {missing}")
+              sys.exit(1)
+          print(f"overlay permits exactly {origins} and every embedded item is covered")
+          PY
+
+      - name: The chart's frame-src switch touches exactly one directive
+        run: |
+          helm template quickportal deploy/helm/quickportal > "$RUNNER_TEMP/h-default.yaml"
+          helm template quickportal deploy/helm/quickportal \
+            --set 'embedding.frameOrigins={https://dashboards.example.com,https://logs.example.org}' \
+            > "$RUNNER_TEMP/h-embed.yaml"
+          python3 - "$RUNNER_TEMP/h-default.yaml" "$RUNNER_TEMP/h-embed.yaml" <<'PY'
+          import sys, yaml, difflib
+          def servercfg(path):
+              for d in yaml.safe_load_all(open(path)):
+                  if d and d["kind"] == "ConfigMap" and d["metadata"]["name"].endswith("-server-config"):
+                      return d.get("data", {})
+              sys.exit("::error::no server-config ConfigMap in " + path)
+
+          default, embed = servercfg(sys.argv[1]), servercfg(sys.argv[2])
+          shipped = open("deploy/kustomize/base/nginx/frame-src.inc").read()
+          problems = []
+
+          # 1. Unused means untouched: the chart must ship the file as the kustomize base
+          #    has it, not a re-rendered copy of it.
+          if default.get("frame-src.inc") != shipped:
+              problems.append("with no frameOrigins the chart does not ship frame-src.inc verbatim:\n" +
+                  "".join(difflib.unified_diff(shipped.splitlines(1),
+                                               (default.get("frame-src.inc") or "").splitlines(1),
+                                               "files/nginx/frame-src.inc", "rendered")))
+          else:
+              print("  frameOrigins empty: frame-src.inc rendered byte-identical to the shipped file")
+
+          # 2. Setting it changes exactly one directive in exactly one file.
+          if set(default) != set(embed):
+              problems.append(f"frameOrigins changed the file set: {sorted(set(embed) ^ set(default))}")
+          for name in sorted(set(default) & set(embed)):
+              if name != "frame-src.inc":
+                  if default[name] != embed[name]:
+                      problems.append(f"frameOrigins changed {name}, which it must never touch")
+                  else:
+                      print(f"  {name}: untouched by frameOrigins")
+          diff = [l for l in difflib.unified_diff(default["frame-src.inc"].splitlines(),
+                                                  embed["frame-src.inc"].splitlines(), n=0)
+                  if l[:1] in "+-" and not l.startswith(("---", "+++"))]
+          want = ['-set $quickportal_frame_src "\'none\'";',
+                  '+set $quickportal_frame_src "https://dashboards.example.com https://logs.example.org";']
+          if diff != want:
+              problems.append("frameOrigins changed more than the one directive:\n  " + "\n  ".join(diff))
+          else:
+              print("  frameOrigins set: exactly one directive line differs, and it lists exactly the origins given")
+          if problems:
+              for p in problems:
+                  print("::error::" + p)
+              sys.exit(1)
+          PY
+
+      # The symptom of a wrong origin is an empty frame with nothing in the
+      # console naming the cause, so the mistakes that can be caught at
+      # template time are caught at template time.
+      - name: A frame origin that is not an origin is refused
+        run: |
+          status=0
+          for bad in 'https:' '*' 'https://app.example.com/grafana' 'https://app.example.com/' \
+                     'dashboards.example.com' 'https://a.example.com https://b.example.com'; do
+            if helm template quickportal deploy/helm/quickportal \
+                 --set-string "embedding.frameOrigins[0]=$bad" >/dev/null 2>&1; then
+              echo "::error::embedding.frameOrigins accepted $bad"
+              status=1
+            else
+              echo "refused: $bad"
+            fi
+          done
+          for good in 'https://a.example.com' 'https://a.example.com:8443' 'https://*.example.com' "'self'"; do
+            if helm template quickportal deploy/helm/quickportal \
+                 --set-string "embedding.frameOrigins[0]=$good" >/dev/null 2>&1; then
+              echo "accepted: $good"
+            else
+              echo "::error::embedding.frameOrigins refused the valid origin $good"
+              status=1
+            fi
+          done
+          exit $status
+
+      # The coupling this feature invites getting half-right: an item asking to
+      # be embedded under a policy that forbids it. In a browser that is an
+      # empty rectangle with no cause named, so the chart refuses to render it.
+      - name: The half-configured state is refused
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/half.yaml" <<'YAML'
+          config:
+            inline: |
+              version: 1
+              title: Half-configured
+              groups:
+                - name: Apps
+                  items:
+                    - name: Dashboards
+                      url: https://dashboards.example.com
+                      embed: true
+                  groups:
+                    - name: Nested
+                      items:
+                        - name: Logs
+                          url: https://logs.example.org/explore
+                          embed: true
+          YAML
+          status=0
+          expect_fail() {
+            if helm template quickportal deploy/helm/quickportal -f "$RUNNER_TEMP/half.yaml" "$@" >/dev/null 2>&1; then
+              echo "::error::the chart rendered a half-configured embedding state: $*"
+              status=1
+            else
+              echo "refused: ${*:-no frame origins at all}"
+            fi
+          }
+          expect_pass() {
+            if helm template quickportal deploy/helm/quickportal -f "$RUNNER_TEMP/half.yaml" "$@" >/dev/null 2>&1; then
+              echo "rendered: $*"
+            else
+              echo "::error::the chart refused a correctly configured embedding state: $*"
+              helm template quickportal deploy/helm/quickportal -f "$RUNNER_TEMP/half.yaml" "$@" 2>&1 | tail -6
+              status=1
+            fi
+          }
+          # embed: true with no policy at all, and with only one of the two
+          # origins -- the subtle half, where the operator thinks it is done.
+          expect_fail
+          expect_fail --set 'embedding.frameOrigins={https://dashboards.example.com}'
+          # Both origins, and the wildcard form of both.
+          expect_pass --set 'embedding.frameOrigins={https://dashboards.example.com,https://logs.example.org}'
+          expect_pass --set 'embedding.frameOrigins={https://*.example.com,https://*.example.org}'
+          # The config the chart does not own cannot be checked, and must not
+          # be guessed at.
+          expect_pass --set config.create=false --set config.existingConfigMap=quickportal-config
+          # And the shipped values, which embed nothing, render as always.
+          helm template quickportal deploy/helm/quickportal >/dev/null
+          echo "shipped values render with embedding off"
+          exit $status
+
+      # The chart and the kustomize base share the nginx files by symlink, and
+      # the chart substitutes one value into one of them. If the rendered files
+      # ever differ under the default values, the policy has two definitions
+      # and the chart's is the one that will drift.
+      - name: Chart and kustomize ship identical nginx files
+        run: |
+          kustomize build . > "$RUNNER_TEMP/k.yaml"
+          helm template quickportal deploy/helm/quickportal > "$RUNNER_TEMP/h.yaml"
+          python3 - "$RUNNER_TEMP/k.yaml" "$RUNNER_TEMP/h.yaml" <<'PY'
+          import sys, yaml
+
+          def nginx(path):
+              for d in yaml.safe_load_all(open(path)):
+                  if d and d["kind"] == "ConfigMap" and "server-config" in d["metadata"]["name"]:
+                      return d.get("data", {})
+              return {}
+
+          k, h = nginx(sys.argv[1]), nginx(sys.argv[2])
+          if not k or not h:
+              print("::error::could not find the server-config ConfigMap in both renders")
+              sys.exit(1)
+          if k.keys() != h.keys():
+              print(f"::error::different nginx files: kustomize={sorted(k)} helm={sorted(h)}")
+              sys.exit(1)
+          drift = [key for key in k if k[key] != h[key]]
+          if drift:
+              print(f"::error::same nginx filenames, different contents: {drift}")
+              sys.exit(1)
+          print(f"both ship {len(k)} identical nginx files")
           PY

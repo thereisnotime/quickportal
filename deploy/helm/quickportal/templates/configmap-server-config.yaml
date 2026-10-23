@@ -3,7 +3,23 @@ The nginx config, symlinked from deploy/kustomize/base/nginx so the chart and
 the kustomize base can never drift. The cache headers in it are load-bearing:
 the config file is served revalidated so live reload works, and the assets are
 cacheable. A change rolls the pod via checksum/server-config.
+
+One file is not shipped verbatim: frame-src.inc, which holds the single CSP
+directive a deployment is meant to change. The shipped file sets it to 'none';
+when embedding.frameOrigins is set, the one `set` line is rewritten and every
+other byte of every other file, including the Content-Security-Policy in
+security-headers.inc, is left exactly as the kustomize base ships it.
+
+This is why the chart is not a second copy of the policy. It substitutes a
+value into a file it otherwise does not read. With frameOrigins empty it does
+not substitute at all, so the rendered ConfigMap is byte-identical to the one
+the chart rendered before this feature existed -- which CI asserts against the
+v0.1.0 tag rather than trusting this comment.
 */}}
+{{- include "quickportal.assertEmbedding" . -}}
+{{- $frameSrc := include "quickportal.frameSrc" . -}}
+{{- /* The exact line the shipped frame-src.inc ends with. */ -}}
+{{- $shipped := "set $quickportal_frame_src \"'none'\";" -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -13,5 +29,13 @@ metadata:
 data:
 {{- range $path, $bytes := .Files.Glob "files/nginx/*" }}
   {{ base $path }}: |
+{{- if and (eq (base $path) "frame-src.inc") (ne $frameSrc "'none'") }}
+{{- $body := $.Files.Get $path }}
+{{- if not (contains $shipped $body) }}
+{{- fail (printf "%s no longer contains %q, so the chart cannot tell which directive to rewrite. Fix the template rather than adding a second frame-src somewhere." (base $path) $shipped) }}
+{{- end }}
+{{ $body | replace $shipped (printf "set $quickportal_frame_src \"%s\";" $frameSrc) | indent 4 }}
+{{- else }}
 {{ $.Files.Get $path | indent 4 }}
+{{- end }}
 {{- end }}

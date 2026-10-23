@@ -21,7 +21,7 @@ The shipped server config SHALL serve the config file revalidated per request an
 
 #### Scenario: Default forbids framing
 - **WHEN** the deployment sets no frame origins
-- **THEN** the rendered policy is byte-identical to one with the embedding feature absent
+- **THEN** the policy served on the wire is byte-identical to the policy served before this feature existed, for every path
 
 ## ADDED Requirements
 
@@ -38,4 +38,6 @@ Permitting framing SHALL require a deployment-level change as well as a config-l
 
 #### Scenario: Unused feature changes nothing
 - **WHEN** no item is embedded and no frame origins are set
-- **THEN** the rendered manifests and headers are unchanged from a deployment without this feature
+- **THEN** every response header is byte-identical to the previous release's, and the rendered manifests differ from it only by the directives that implement the switch, compared against the released tag rather than a fixture
+
+Byte-identical *manifests* is not the test, because any implementation of a configurable directive changes the file holding it. Stating it that way invites either a weakened smoke test or the conclusion that the requirement cannot be met. What is enforceable, and what this scenario means, is that the served policy does not move and the manifest diff contains nothing but the switch.

@@ -13,8 +13,17 @@ metadata:
     #   nginx.ingress.kubernetes.io/auth-url: https://auth.example.com/verify
     #   nginx.ingress.kubernetes.io/auth-signin: https://auth.example.com/start
     #
-    # Do not add headers here that relax frame-ancestors: the app is not meant
-    # to be framed, and embedding other apps in it is explicitly out of scope.
+    # Do not add headers here that relax frame-ancestors or drop
+    # X-Frame-Options: the portal is not meant to be framed by anything, and
+    # that is true whether or not the portal frames other apps itself.
+    #
+    # Nor should anything here rewrite Content-Security-Policy. Embedding other
+    # apps inside the portal is configurable, but it is configured in the
+    # portal's own server config, by patching one key of the server-config
+    # ConfigMap -- see embedding/ next to this file. An ingress controller that
+    # bolts on a second CSP header does not widen the policy; browsers enforce
+    # every policy they are sent, so the result is the intersection and the
+    # frames stay blocked.
 spec:
   # Replace with the class your cluster actually has.
   ingressClassName: nginx
