@@ -120,8 +120,8 @@ This is the contract. The modules are written independently against it.
 
 - `src/assets/config.js` — `CONFIG_VERSION`; `parseConfig(text) -> {raw, errors}` (JSON first, then YAML); `normalizeConfig(raw) -> {config, errors, warnings}` (defaults, derived ids, duplicate detection, depth cap of 5, unknown-key warnings); `indexItems(config) -> Map<id, item>`; `resolveTargets(set, config) -> {items, unresolved}`. An issue is `{path: "groups[0].items[2].url", message}`.
 - `src/assets/state.js` — `getTheme()`, `setTheme(t)`, `isCollapsed(id, fallback)`, `setCollapsed(id, bool)`, `getQuery()`, `setQuery(s)`. Every `localStorage` access wrapped in try/catch: a private window with storage blocked must still render.
-- `src/assets/sets.js` — `openSet(set, config) -> {opened: number, blocked: Item[]}`.
-- `src/assets/reload.js` — `watchConfig(url, intervalSeconds, onChange) -> stop()`.
+- `src/assets/sets.js` — `openSet(set, config, deps?) -> {opened: number, blocked: Item[], confirmed: boolean}`. `confirmed` is false only when a large set was declined, so the UI can tell a cancel from a zero-target set instead of blaming the popup blocker. Target resolution must be synchronous, since an `await` before the `window.open` calls destroys the user gesture, so `sets.js` imports `resolveTargets` from `config.js` statically; `deps.resolveTargets` exists for tests only and there is exactly one resolver implementation.
+- `src/assets/reload.js` — `watchConfig(url, intervalSeconds, onChange, deps?) -> stop()`, where the returned `stop` also carries `stop.refresh({force})` for the manual reload control: `refresh()` polls immediately, `force` additionally omits `If-None-Match` and signals even on unchanged content, because a deliberate reload click should visibly do something. `onChange(text, {etag, hash})`. `deps` may seed `etag` and `body` from the page's initial fetch; unseeded, the first successful `200` counts as a change, which is the safe default because the alternative silently swallows an edit made between the initial fetch and the first poll.
 - `src/assets/render.js` — `renderPortal(root, config, handlers)`, `renderIssues(root, errors, warnings)`, `applyFilter(root, query) -> matchCount`. `handlers = {onOpenSet(setId), onToggleGroup(id, collapsed), onOpenItem(item)}`.
 - `src/assets/app.js` — wiring only: fetch, parse, render, watch, bind keyboard.
 
@@ -147,6 +147,8 @@ path nested inside the app's mount, which Kubernetes supports and which keeps
 an app upgrade from touching the user's config or the reverse.
 
 ### Tests without a toolchain
+
+The test command is `node --test 'tests/**/*.test.mjs'`. A bare directory (`node --test tests/`) no longer works: Node 25 treats the positional as a module entry point and fails with `MODULE_NOT_FOUND`, so CI and the docs must use the glob.
 
 `node:test` and `node:assert` cover `config.js`, `sets.js` and `reload.js` as pure modules, with `fetch` and `window.open` stubbed. No devDependencies, so `node --test tests/` is the whole command and CI needs only a node action. Browser-level behaviour (responsive layout, the palette) is left to a Playwright suite in a later change rather than half-done here.
 
