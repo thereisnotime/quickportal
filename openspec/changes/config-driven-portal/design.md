@@ -125,6 +125,27 @@ This is the contract. The modules are written independently against it.
 - `src/assets/render.js` — `renderPortal(root, config, handlers)`, `renderIssues(root, errors, warnings)`, `applyFilter(root, query) -> matchCount`. `handlers = {onOpenSet(setId), onToggleGroup(id, collapsed), onOpenItem(item)}`.
 - `src/assets/app.js` — wiring only: fetch, parse, render, watch, bind keyboard.
 
+### Served layout is flat, because ConfigMap keys cannot contain slashes
+
+A ConfigMap key must match `[-._a-zA-Z0-9]+`, so a single ConfigMap cannot
+reproduce a directory tree. `configMapGenerator` keys files by basename, which
+means the repository can keep `src/assets/` and `src/vendor/` for the sake of
+reading it, while the served tree is flat:
+
+```
+/index.html
+/app.css  /app.js  /config.js  /render.js  /reload.js  /sets.js  /state.js
+/js-yaml.mjs
+/config/config.yaml      <- the user's own ConfigMap, mounted nested
+```
+
+Consequences that bind the implementation: every import and link is a flat
+relative path (`./config.js`, `./js-yaml.mjs`, `./app.css`), basenames across
+`src/` must stay unique, and the config URL the app fetches is
+`./config/config.yaml`. The user's config is a separate volume mounted at a
+path nested inside the app's mount, which Kubernetes supports and which keeps
+an app upgrade from touching the user's config or the reverse.
+
 ### Tests without a toolchain
 
 `node:test` and `node:assert` cover `config.js`, `sets.js` and `reload.js` as pure modules, with `fetch` and `window.open` stubbed. No devDependencies, so `node --test tests/` is the whole command and CI needs only a node action. Browser-level behaviour (responsive layout, the palette) is left to a Playwright suite in a later change rather than half-done here.
