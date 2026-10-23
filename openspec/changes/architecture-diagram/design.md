@@ -149,14 +149,44 @@ diagram); converting CSS rules to presentation attributes (lossy, and
 mermaid's selectors do not map cleanly); dropping styles (produces a diagram
 nobody would accept).
 
-### Module layout
+### Module layout and the contract between the pieces
 
-- `src/assets/diagram.js` — `fetchDiagram(url, {maxBytes, deps}) -> {text, bytes, error}`, `sanitizeSvg(text, {deps}) -> {svg, dropped, error}`, `toPng(svgEl, {scale}) -> Promise<Blob>`, `serializeSvg(svgEl) -> string`
-- `src/assets/render.js` — `renderDiagramPanel(root, model, handlers)`
-- `config.js` — the `diagram` section, validated like the rest
-- `state.js` — remembers whether the panel is open
+Written here first so the pieces can be built independently.
 
-`diagram.js` must import cleanly in plain Node with `DOMParser`, `XMLSerializer` and `document` injected, so the sanitiser is testable without a browser. The sanitiser is the part that must be tested hardest and it must not require a DOM to test.
+**DOM, already in `index.html`:** `#diagram-panel` is a sibling of
+`<main id="portal">`, outside everything that re-renders, for the same reason
+the frame host is: rebuilding an inlined SVG on every config poll would discard
+the pan and zoom position and re-run the renderer.
+
+**`src/assets/diagram.js`**, which touches no DOM it was not handed and takes
+`document`, `DOMParser`, `XMLSerializer`, `fetch` and timers through `deps` so
+it is testable in plain Node:
+
+- `fetchDiagram(url, {maxBytes, deps}) -> {text, bytes, error}` — enforces the
+  size limit from the response before reading the body where possible, and
+  always before parsing
+- `renderSource(source, renderer, {deps}) -> {text, error}` — dynamically
+  imports `renderer.url`, calls `initialize(renderer.options)` if present, then
+  `render(id, source)` and takes the `svg` from the result. The adapter targets
+  that shape because it is mermaid's, and the docs state it so another renderer
+  can match it. A failed import is an `error`, never a throw
+- `sanitizeSvg(text, {scopeId, deps}) -> {el, css, dropped, error}` — parses as
+  `image/svg+xml`, rebuilds against the allowlist, and returns the element plus
+  the **extracted, filtered, scoped** CSS as text. `dropped` counts elements,
+  attributes and declarations, so the panel can say the diagram was altered
+- `applyScopedCss(css, {deps}) -> stop()` — a constructed stylesheet, adopted on
+  the document, which `style-src` does not govern. `stop()` removes it
+- `serializeSvg(el) -> string`
+- `toPng(el, {scale, deps}) -> Promise<Blob>`
+
+**`src/assets/render.js`** — `renderDiagramPanel(host, model, handlers)`, where
+the model carries the sanitised element or an error, the drop counts, the zoom
+state and the title, and handlers cover toggle, zoom, fit, both exports and
+retry. The panel never parses or sanitises anything itself.
+
+**`config.js`** validates the `diagram` section; **`state.js`** gains
+`getDiagramOpen()` / `setDiagramOpen(bool)` alongside the other per-viewer
+preferences.
 
 ## Risks / Trade-offs
 

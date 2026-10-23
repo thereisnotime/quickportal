@@ -86,6 +86,14 @@
     <div id="tab-strip" class="shell tabstrip" role="tablist" aria-label="Open apps" hidden></div>
     <div id="frame-host" class="framehost" hidden></div>
 
+    <!--
+      The diagram panel is outside <main> for the same reason as the frames:
+      rendering replaces nodes inside #portal, and rebuilding an inlined SVG
+      would throw away the pan and zoom position, and re-run the renderer, on
+      every config poll. Do not move this inside the main element.
+    -->
+    <section id="diagram-panel" class="shell diagram" aria-labelledby="diagram-title" hidden></section>
+
     <main id="portal" class="shell portal" tabindex="-1"></main>
 
     <!-- Announcements: search result counts, set results, reload outcomes. -->
