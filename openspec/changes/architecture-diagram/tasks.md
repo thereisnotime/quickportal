@@ -40,6 +40,6 @@
 
 ## 6. Release
 
-- [ ] 6.1 Verify on a cluster: a real diagram delivered by ConfigMap, updated without a restart, and both exports
-- [ ] 6.2 Confirm a deployment with no diagram is unchanged on the wire
+- [x] 6.1 Verify on a cluster: a real diagram delivered by ConfigMap, updated without a restart, and both exports
+- [x] 6.2 Confirm a deployment with no diagram is unchanged on the wire
 - [ ] 6.3 Tag the minor release
