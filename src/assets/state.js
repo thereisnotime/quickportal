@@ -9,6 +9,7 @@
 const KEY_THEME = "quickportal.theme";
 const KEY_COLLAPSED = "quickportal.collapsed";
 const KEY_QUERY = "quickportal.query";
+const KEY_OPEN_TABS = "quickportal.openTabs";
 
 const THEMES = ["auto", "light", "dark"];
 
@@ -153,6 +154,54 @@ export function setQuery(query, storage) {
   const value = typeof query === "string" ? query : "";
   if (value === "") return removeRaw(KEY_QUERY, storage);
   return writeRaw(KEY_QUERY, value, storage);
+}
+
+/**
+ * The ids of the items whose tabs were open, in strip order.
+ *
+ * Only which apps were open is remembered, never anything from inside them:
+ * restoring is a fresh mount, so the apps start over. Junk, duplicates and
+ * non-strings are discarded rather than handed to the frame host, and an id
+ * whose item has since left the config is the caller's to skip.
+ *
+ * @param {object} [storage]
+ * @returns {string[]} the remembered ids, or [].
+ */
+export function getOpenTabs(storage) {
+  const raw = readRaw(KEY_OPEN_TABS, storage);
+  if (!raw) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return []; // Someone else wrote junk under our key; start over.
+  }
+  if (!Array.isArray(parsed)) return [];
+  const ids = [];
+  for (const id of parsed) {
+    if (typeof id !== "string" || id === "") continue;
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * An empty set is removed rather than stored, so a fresh browser and one where
+ * every tab was closed behave the same.
+ *
+ * @param {string[]} ids item ids, in strip order
+ * @param {object} [storage]
+ * @returns {boolean} whether it was remembered.
+ */
+export function setOpenTabs(ids, storage) {
+  const list = Array.isArray(ids) ? ids : [];
+  const clean = [];
+  for (const id of list) {
+    if (typeof id !== "string" || id === "") continue;
+    if (!clean.includes(id)) clean.push(id);
+  }
+  if (clean.length === 0) return removeRaw(KEY_OPEN_TABS, storage);
+  return writeRaw(KEY_OPEN_TABS, JSON.stringify(clean), storage);
 }
 
 /**

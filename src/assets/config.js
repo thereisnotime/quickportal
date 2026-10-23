@@ -31,21 +31,106 @@ export const DEFAULTS = Object.freeze({
   reloadInterval: 30,
   target: "_blank",
   collapsed: false,
+  embed: false,
+  maxFrames: 4,
 });
+
+/**
+ * The default cap on mounted frames, named as in the design so frames.js and
+ * this module cannot drift apart. `embedding.maxFrames` overrides it.
+ */
+export const FRAME_DEFAULT_MAX = DEFAULTS.maxFrames;
+
+/**
+ * The largest cap a config may ask for. Each frame is a whole application, so
+ * a number past this is far more likely to be a typo than an intention, and it
+ * is treated as one: a warning and the default.
+ */
+export const FRAME_MAX = 16;
+
+/**
+ * Permission tokens accepted in an item's `allow`, which is passed to the
+ * frame's `allow` attribute verbatim.
+ *
+ * Deliberately short, and the only place the set is written down. Anything
+ * else is dropped with a warning: a token this portal does not know is either
+ * a typo or a browser feature nobody here has thought about, and handing
+ * either one to `allow` would delegate a capability by accident. Camera,
+ * microphone, geolocation and display-capture are excluded on purpose, since
+ * a bookmark list is the wrong place to grant a device to another origin; the
+ * ones here are what a dashboard or a media app needs to play and to copy.
+ */
+export const ALLOW_TOKENS = Object.freeze([
+  "autoplay",
+  "clipboard-read",
+  "clipboard-write",
+  "encrypted-media",
+  "fullscreen",
+  "picture-in-picture",
+]);
+
+/**
+ * Sandbox tokens accepted in an item's `sandbox`. Same treatment as `allow`:
+ * unknown tokens are dropped with a warning rather than reaching the
+ * attribute, where a misspelled token silently withholds a capability instead
+ * of granting one.
+ *
+ * `sandbox` is opt-in. Absent or empty means no `sandbox` attribute at all,
+ * which is not the same as `sandbox: []` in HTML (that is the most restrictive
+ * sandbox there is) and would break every app that was not written for it.
+ */
+export const SANDBOX_TOKENS = Object.freeze([
+  "allow-downloads",
+  "allow-forms",
+  "allow-modals",
+  "allow-popups",
+  "allow-popups-to-escape-sandbox",
+  "allow-same-origin",
+  "allow-scripts",
+  "allow-storage-access-by-user-activation",
+  "allow-top-navigation-by-user-activation",
+]);
 
 const THEMES = ["auto", "light", "dark"];
 const DENSITIES = ["comfortable", "compact"];
 const TARGETS = ["_blank", "_self"];
 
-const ROOT_KEYS = ["version", "title", "subtitle", "theme", "layout", "reload", "groups", "sets"];
+const ROOT_KEYS = [
+  "version",
+  "title",
+  "subtitle",
+  "theme",
+  "layout",
+  "reload",
+  "embedding",
+  "groups",
+  "sets",
+];
 const LAYOUT_KEYS = ["density", "minCardWidth"];
 const RELOAD_KEYS = ["interval"];
+const EMBEDDING_KEYS = ["maxFrames"];
 const GROUP_KEYS = ["id", "name", "icon", "collapsed", "items", "groups"];
-const ITEM_KEYS = ["id", "name", "url", "description", "icon", "tags", "target"];
+const ITEM_KEYS = [
+  "id",
+  "name",
+  "url",
+  "description",
+  "icon",
+  "tags",
+  "target",
+  "embed",
+  "allow",
+  "sandbox",
+];
 const SET_KEYS = ["id", "name", "icon", "targets"];
 
 // Schemes that would execute code from a bookmark rather than navigate to one.
 const BLOCKED_SCHEMES = ["javascript:", "vbscript:"];
+
+// The only schemes a browser will load into a frame. Everything else a
+// bookmark may legitimately use -- mailto:, magnet:, tel:, ssh: -- is handed to
+// an external handler, so an embedded one could never open.
+const FRAMABLE_PROTOCOLS = ["http:", "https:"];
 
 function issue(path, message) {
   return { path, message };
@@ -152,8 +237,12 @@ export function normalizeConfig(raw) {
     layout: normalizeLayout(raw.layout, ctx),
     reload: normalizeReload(raw.reload, ctx),
     groups: normalizeGroups(raw.groups, "groups", [], 1, ctx),
+    embedding: null,
     sets: [],
   };
+  // After the groups, because it reports which items opted in, and before the
+  // sets only so the key order matches the document's.
+  config.embedding = normalizeEmbedding(raw.embedding, config, ctx);
   config.sets = normalizeSets(raw.sets, config, ctx);
 
   return { config, errors: ctx.errors, warnings: ctx.warnings };
@@ -251,6 +340,41 @@ function normalizeReload(raw, ctx) {
   return reload;
 }
 
+/**
+ * Top level embedding options, plus the summary the view layer needs so it does
+ * not have to walk the tree again: `enabled` is true when anything opted in,
+ * and `itemIds` lists those items in render order.
+ */
+function normalizeEmbedding(raw, config, ctx) {
+  const itemIds = [];
+  for (const item of walkItems(config.groups)) {
+    if (item.embed) itemIds.push(item.id);
+  }
+  const embedding = { maxFrames: DEFAULTS.maxFrames, enabled: itemIds.length > 0, itemIds };
+
+  if (raw === undefined || raw === null) return embedding;
+  if (!isPlainObject(raw)) {
+    ctx.warnings.push(issue("embedding", `expected a mapping, got ${typeName(raw)}; using defaults`));
+    return embedding;
+  }
+  warnUnknownKeys(raw, EMBEDDING_KEYS, "embedding", ctx);
+
+  const max = raw.maxFrames;
+  if (max === undefined || max === null) return embedding;
+  if (typeof max !== "number" || !Number.isInteger(max) || max < 1 || max > FRAME_MAX) {
+    ctx.warnings.push(
+      issue(
+        "embedding.maxFrames",
+        `expected a whole number of frames between 1 and ${FRAME_MAX}, got ${JSON.stringify(max)}; ` +
+          `using ${DEFAULTS.maxFrames}`,
+      ),
+    );
+    return embedding;
+  }
+  embedding.maxFrames = max;
+  return embedding;
+}
+
 // ---------------------------------------------------------------------------
 // Groups and items
 // ---------------------------------------------------------------------------
@@ -340,6 +464,9 @@ function normalizeItem(raw, path, parentIds, index, ctx) {
   const id = resolveId(raw, path, name, parentIds, `item-${index}`, ctx, ctx.idPaths);
   if (id === null) return null;
 
+  const embedding = readEmbedFields(raw, path, url, ctx);
+  if (embedding === null) return null;
+
   return {
     id,
     name,
@@ -348,7 +475,89 @@ function normalizeItem(raw, path, parentIds, index, ctx) {
     icon: optionalIcon(raw.icon, `${path}.icon`, ctx),
     tags: normalizeTags(raw.tags, `${path}.tags`, ctx),
     target: optionalEnum(raw.target, TARGETS, `${path}.target`, DEFAULTS.target, ctx),
+    embed: embedding.embed,
+    allow: embedding.allow,
+    sandbox: embedding.sandbox,
   };
+}
+
+// `embed`, `allow` and `sandbox` for one item. Returns null when the item
+// cannot stand, which is the same contract as the rest of normalizeItem:
+// an error drops the entry rather than rendering something that cannot work.
+function readEmbedFields(raw, path, url, ctx) {
+  const embed = optionalBoolean(raw.embed, `${path}.embed`, DEFAULTS.embed, ctx);
+  const allow = normalizeTokenList(raw.allow, `${path}.allow`, ALLOW_TOKENS, "permission", ctx);
+  const sandbox = normalizeTokenList(raw.sandbox, `${path}.sandbox`, SANDBOX_TOKENS, "sandbox", ctx);
+
+  // A scheme that cannot be framed makes the embed request impossible, not the
+  // bookmark. Dropping the entry would cost the author a working link over a
+  // field that can simply be ignored, so this degrades: the item stays, opens
+  // in a browser tab, and the author is told why.
+  if (embed && !isFramableUrl(url)) {
+    const scheme = url.split(":")[0];
+    ctx.warnings.push(
+      issue(
+        `${path}.embed`,
+        `${scheme}: URLs cannot be framed, so this item opens in a browser tab; ` +
+          `remove "embed: true" to silence this`,
+      ),
+    );
+    return { embed: false, allow, sandbox };
+  }
+
+  if (!embed && (allow.length > 0 || sandbox.length > 0)) {
+    ctx.warnings.push(
+      issue(path, 'allow and sandbox only apply to an embedded item; add "embed: true" or drop them'),
+    );
+  }
+
+  // The combination is honoured, because withholding a token an operator asked
+  // for would break their app in a way that is hard to trace back to here, but
+  // it is never honoured quietly: a framed page allowed both can reach into its
+  // own sandbox attribute and remove it, so the sandbox protects nothing.
+  if (sandbox.includes("allow-scripts") && sandbox.includes("allow-same-origin")) {
+    ctx.warnings.push(
+      issue(
+        `${path}.sandbox`,
+        "allow-scripts together with allow-same-origin lets the framed page remove its own " +
+          "sandbox, so this combination provides no protection; drop one of the two",
+      ),
+    );
+  }
+
+  return { embed, allow, sandbox };
+}
+
+// One token list, filtered against a known set. Unknown tokens are named and
+// dropped: see ALLOW_TOKENS for why nothing is passed through unrecognised.
+function normalizeTokenList(value, path, allowed, kind, ctx) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    ctx.warnings.push(issue(path, `expected a list of ${kind} tokens, got ${typeName(value)}; ignored`));
+    return [];
+  }
+  const tokens = [];
+  value.forEach((token, index) => {
+    if (!isNonEmptyString(token)) {
+      ctx.warnings.push(
+        issue(`${path}[${index}]`, `expected a ${kind} token, got ${typeName(token)}; ignored`),
+      );
+      return;
+    }
+    const name = token.trim();
+    if (!allowed.includes(name)) {
+      ctx.warnings.push(
+        issue(
+          `${path}[${index}]`,
+          `unknown ${kind} token "${name}" dropped; this portal passes through only ` +
+            `${allowed.join(", ")}`,
+        ),
+      );
+      return;
+    }
+    if (!tokens.includes(name)) tokens.push(name);
+  });
+  return tokens;
 }
 
 function readName(raw, path, kind, ctx) {
@@ -523,6 +732,20 @@ export function isUsableUrl(value) {
   } catch {
     return false;
   }
+}
+
+/**
+ * True for a URL a browser will load into a frame: `http(s)`, or a relative URL,
+ * which resolves against the page's own origin.
+ *
+ * Built on isUsableUrl and its base URL rather than a second scheme list, so a
+ * relative URL is classified the same way in both and only the scheme of an
+ * absolute URL decides the answer.
+ */
+export function isFramableUrl(value) {
+  if (!isUsableUrl(value)) return false;
+  const { protocol } = new URL(String(value).trim(), "http://example.com/");
+  return FRAMABLE_PROTOCOLS.includes(protocol);
 }
 
 function readUrl(value, path, ctx) {

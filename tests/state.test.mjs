@@ -13,6 +13,8 @@ import {
   setCollapsed,
   getQuery,
   setQuery,
+  getOpenTabs,
+  setOpenTabs,
   createMemoryStorage,
 } from "../src/assets/state.js";
 
@@ -231,4 +233,55 @@ test("getStoredTheme rejects junk and survives storage being unavailable", () =>
     removeItem() {},
   };
   assert.equal(getStoredTheme(hostile), null);
+});
+
+// ---------------------------------------------------------------------------
+// The open tab set, remembered like the other per-viewer preferences
+// ---------------------------------------------------------------------------
+
+test("the open tab set round-trips in strip order", () => {
+  const storage = createMemoryStorage();
+  assert.deepEqual(getOpenTabs(storage), [], "nothing remembered yet");
+
+  assert.equal(setOpenTabs(["apps/dashboards", "apps/logs"], storage), true);
+  assert.deepEqual(getOpenTabs(storage), ["apps/dashboards", "apps/logs"]);
+});
+
+test("an empty set is removed rather than stored", () => {
+  const storage = createMemoryStorage();
+  setOpenTabs(["apps/dashboards"], storage);
+
+  assert.equal(setOpenTabs([], storage), true);
+  assert.equal(storage.getItem("quickportal.openTabs"), null, "the key is gone, not an empty list");
+  assert.deepEqual(getOpenTabs(storage), []);
+});
+
+test("junk under the key is discarded instead of reaching the frame host", () => {
+  const storage = createMemoryStorage();
+  for (const junk of ["not json", '"a string"', "{}", "17"]) {
+    storage.setItem("quickportal.openTabs", junk);
+    assert.deepEqual(getOpenTabs(storage), [], `junk: ${junk}`);
+  }
+
+  storage.setItem("quickportal.openTabs", JSON.stringify(["ok", "", 3, null, "ok"]));
+  assert.deepEqual(getOpenTabs(storage), ["ok"], "non-ids and duplicates are dropped");
+});
+
+test("writing a set filters the ids it is given", () => {
+  const storage = createMemoryStorage();
+  setOpenTabs(["one", "", null, "one", "two", 5], storage);
+  assert.deepEqual(getOpenTabs(storage), ["one", "two"]);
+
+  assert.equal(setOpenTabs("not a list", storage), true, "nothing usable means nothing remembered");
+  assert.deepEqual(getOpenTabs(storage), []);
+});
+
+test("the open tab set survives storage being unavailable or full", () => {
+  const hostile = hostileStorage();
+  assert.deepEqual(getOpenTabs(hostile), []);
+  assert.equal(setOpenTabs(["apps/dashboards"], hostile), false);
+
+  const full = fullStorage();
+  assert.equal(setOpenTabs(["apps/dashboards"], full), false, "a failed write is reported");
+  assert.deepEqual(getOpenTabs(full), []);
 });

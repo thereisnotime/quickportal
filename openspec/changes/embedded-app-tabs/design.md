@@ -117,6 +117,35 @@ contain them. Focus mode is `document.body.dataset.focusMode = "on"`.
   knowable, and says nothing about whether the target allows framing, which is
   not.
 
+**The normalized config**, which is where the other pieces get their inputs:
+
+- every item carries `embed` (boolean), `allow` (validated tokens) and
+  `sandbox` (validated tokens, empty meaning no attribute at all, which is not
+  the same as HTML's `sandbox=""`)
+- `config.embedding = {maxFrames, enabled, itemIds}`, where `itemIds` is the
+  embedded items in render order, so nothing has to walk the tree again
+- `FRAME_DEFAULT_MAX` (4) and `FRAME_MAX` (16, the sanity bound) live in
+  `config.js`, because that is where the default is applied. `frames.js`
+  imports `FRAME_DEFAULT_MAX` rather than declaring a second 4 that can drift
+- `host.restore(ids, itemsById)` takes `indexItems(config)` as its map
+
+**The `allow` attribute** is directive syntax, not a token list: the validated
+tokens are joined with `; `, and a bare token means `'src'`, which is the
+intended scope here. `frames.js` does that joining; `config.js` only validates.
+
+**Two judgement calls, settled:**
+
+- `sandbox` containing both `allow-scripts` and `allow-same-origin` is warned
+  about and still honoured. The combination lets the framed page remove its own
+  sandbox, so it protects nothing and the author should know, but withholding a
+  token an operator deliberately asked for would break their app in a way that
+  is very hard to trace back to the config layer.
+- `embed: true` on a scheme that cannot be framed is a **warning with a
+  fallback**, not an error: the item keeps working as a bookmark and opens in a
+  browser tab. The embed request is impossible, the bookmark is not, and
+  dropping the entry would cost the author a working link over a field that can
+  simply be ignored.
+
 **The view layer** renders the strip from `onChange`, calls the host for every
 action, and owns focus mode. It must never create, move or remove a frame
 element itself.

@@ -17,7 +17,7 @@ An item MAY carry `embed`, `allow` and `sandbox`, and a top level `embedding.max
 
 #### Scenario: Embedding a non-embeddable scheme
 - **WHEN** an item sets `embed: true` on a URL whose scheme cannot be framed, such as a `mailto:` or `magnet:` link
-- **THEN** an error is reported at that path, since the item could never open
+- **THEN** a warning is reported at that path, the item keeps working as a bookmark that opens in a browser tab, and it is absent from the embedded set, because the embed request is impossible but the bookmark is not
 
 #### Scenario: Cap out of range
 - **WHEN** `embedding.maxFrames` is zero, negative or not an integer

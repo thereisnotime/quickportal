@@ -15,7 +15,11 @@ import {
   indexItems,
   resolveTargets,
   isUsableUrl,
+  isFramableUrl,
   slugify,
+  FRAME_DEFAULT_MAX,
+  ALLOW_TOKENS,
+  SANDBOX_TOKENS,
 } from "../src/assets/config.js";
 import { load as yamlLoad } from "../src/assets/js-yaml.mjs";
 
@@ -719,4 +723,262 @@ groups:
     [config.groups[0].items[0].id, config.groups[1].items[0].id],
     ["one/status", "two/status"],
   );
+});
+
+// ---------------------------------------------------------------------------
+// Requirement: Embedding fields are validated
+// (openspec/changes/embedded-app-tabs/specs/bookmark-config/spec.md)
+// ---------------------------------------------------------------------------
+
+/** A one-item config whose item carries the given extra YAML lines. */
+function itemWith(lines, url = "https://dashboards.example.com") {
+  const extra = lines.map((line) => `        ${line}`).join("\n");
+  return `version: 1
+groups:
+  - name: Apps
+    items:
+      - name: Dashboards
+        url: ${url}
+${extra}
+`;
+}
+
+test("an item with embed: true and a known allow token is accepted and marked embedded", () => {
+  const { config, errors, warnings } = loadConfig(itemWith(["embed: true", "allow: [fullscreen]"]));
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, [], "nothing here is questionable");
+  const item = config.groups[0].items[0];
+  assert.equal(item.embed, true);
+  assert.deepEqual(item.allow, ["fullscreen"]);
+  assert.deepEqual(item.sandbox, [], "sandbox is opt-in and stays empty");
+  assert.equal(config.embedding.enabled, true, "the config summary says embedding is in use");
+  assert.deepEqual(config.embedding.itemIds, [item.id], "and names the embedded item");
+});
+
+test("an item that does not opt in defaults to not embedded", () => {
+  const { config, errors, warnings } = loadConfig(MINIMAL_YAML);
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  const item = config.groups[0].items[0];
+  assert.equal(item.embed, DEFAULTS.embed);
+  assert.equal(item.embed, false);
+  assert.deepEqual(item.allow, []);
+  assert.deepEqual(item.sandbox, []);
+  assert.equal(config.embedding.enabled, false);
+  assert.deepEqual(config.embedding.itemIds, []);
+  assert.equal(config.embedding.maxFrames, DEFAULTS.maxFrames);
+});
+
+test("embed with the wrong type warns and falls back to the documented default", () => {
+  const { config, errors, warnings } = loadConfig(itemWith(['embed: "yes"']));
+
+  assert.deepEqual(errors, []);
+  const message = messageFor(warnings, "groups[0].items[0].embed");
+  assert.match(message, /true or false/);
+  assert.equal(config.groups[0].items[0].embed, DEFAULTS.embed);
+});
+
+test("an unknown allow token is named, dropped, and never reaches the frame", () => {
+  const { config, errors, warnings } = loadConfig(
+    itemWith(["embed: true", "allow: [fullscreen, teleportation]"]),
+  );
+
+  assert.deepEqual(errors, []);
+  const message = messageFor(warnings, "groups[0].items[0].allow[1]");
+  assert.match(message, /teleportation/, "the warning names the offending token");
+  assert.deepEqual(config.groups[0].items[0].allow, ["fullscreen"]);
+});
+
+test("an unknown sandbox token is named and dropped the same way", () => {
+  const { config, errors, warnings } = loadConfig(
+    itemWith(["embed: true", "sandbox: [allow-forms, allow-everything]"]),
+  );
+
+  assert.deepEqual(errors, []);
+  assert.match(messageFor(warnings, "groups[0].items[0].sandbox[1]"), /allow-everything/);
+  assert.deepEqual(config.groups[0].items[0].sandbox, ["allow-forms"]);
+});
+
+test("allow and sandbox that are not lists are ignored with a warning", () => {
+  const { config, errors, warnings } = loadConfig(
+    itemWith(["embed: true", "allow: fullscreen", "sandbox: 3"]),
+  );
+
+  assert.deepEqual(errors, []);
+  assert.match(messageFor(warnings, "groups[0].items[0].allow"), /list of permission tokens/);
+  assert.match(messageFor(warnings, "groups[0].items[0].sandbox"), /list of sandbox tokens/);
+  assert.deepEqual(config.groups[0].items[0].allow, []);
+  assert.deepEqual(config.groups[0].items[0].sandbox, []);
+});
+
+test("allow-scripts with allow-same-origin warns that the sandbox protects nothing", () => {
+  const { config, errors, warnings } = loadConfig(
+    itemWith(["embed: true", "sandbox: [allow-scripts, allow-same-origin]"]),
+  );
+
+  assert.deepEqual(errors, []);
+  const message = messageFor(warnings, "groups[0].items[0].sandbox");
+  assert.match(message, /no protection/);
+  assert.deepEqual(
+    config.groups[0].items[0].sandbox,
+    ["allow-scripts", "allow-same-origin"],
+    "honoured, but never quietly",
+  );
+});
+
+test("allow or sandbox without embed warns that they do nothing", () => {
+  const { errors, warnings } = loadConfig(itemWith(["allow: [fullscreen]"]));
+
+  assert.deepEqual(errors, []);
+  assert.match(messageFor(warnings, "groups[0].items[0]"), /only apply to an embedded item/);
+});
+
+test("the new embedding keys do not trip the unknown-key warning", () => {
+  const { errors, warnings } = loadConfig(`version: 1
+embedding:
+  maxFrames: 2
+groups:
+  - name: Apps
+    items:
+      - name: Dashboards
+        url: https://dashboards.example.com
+        embed: true
+        allow: [clipboard-write]
+        sandbox: []
+`);
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+});
+
+test("embed: true on a scheme that cannot be framed warns and keeps the bookmark", () => {
+  for (const url of ["mailto:ops@example.com", "magnet:?xt=urn:btih:abc", "tel:+10000000"]) {
+    const { config, errors, warnings } = loadConfig(itemWith(["embed: true"], url));
+
+    // The embed request is impossible; the bookmark is not. Dropping the entry
+    // would cost a working link over a field that can be ignored.
+    assert.deepEqual(errors, [], `${url} should not be an error`);
+    const message = messageFor(warnings, "groups[0].items[0].embed");
+    assert.match(message, /cannot be framed/, `${url} should warn about embedding`);
+
+    const item = config.groups[0].items[0];
+    assert.equal(item.url, url, "the bookmark survives");
+    assert.equal(item.embed, false, "and falls back to opening in a browser tab");
+    assert.equal(config.embedding.itemIds.includes(item.id), false, "so it is not in the embedded set");
+  }
+});
+
+test("the same non-framable schemes stay perfectly good bookmarks when not embedded", () => {
+  const { config, errors, warnings } = loadConfig(itemWith([], "mailto:ops@example.com"));
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  assert.equal(config.groups[0].items[0].url, "mailto:ops@example.com");
+});
+
+test("an embedded relative URL and an embedded http(s) URL are both fine", () => {
+  for (const url of ["/grafana", "./status", "http://apps.example.org", "https://apps.example.org"]) {
+    const { config, errors } = loadConfig(itemWith(["embed: true"], url));
+    assert.deepEqual(errors, [], `${url} should be framable`);
+    assert.equal(config.groups[0].items[0].embed, true);
+  }
+});
+
+test("isFramableUrl agrees with isUsableUrl about what is a URL at all", () => {
+  assert.equal(isFramableUrl("https://apps.example.com"), true);
+  assert.equal(isFramableUrl("/relative"), true);
+  assert.equal(isFramableUrl("mailto:ops@example.com"), false);
+  assert.equal(isFramableUrl("magnet:?xt=urn:btih:abc"), false);
+  assert.equal(isFramableUrl("not a url"), false);
+  assert.equal(isUsableUrl("not a url"), false);
+  assert.equal(isFramableUrl(""), false);
+});
+
+test("a bad embedding.maxFrames warns and uses the documented default", () => {
+  for (const value of ["0", "-3", "2.5", "999", '"four"']) {
+    const { config, errors, warnings } = loadConfig(`version: 1
+embedding:
+  maxFrames: ${value}
+groups:
+  - name: Apps
+    items:
+      - name: Dashboards
+        url: https://dashboards.example.com
+`);
+    assert.deepEqual(errors, [], `maxFrames ${value} is a warning, not an error`);
+    assert.match(messageFor(warnings, "embedding.maxFrames"), /between 1 and/);
+    assert.equal(config.embedding.maxFrames, DEFAULTS.maxFrames);
+  }
+});
+
+test("a usable embedding.maxFrames is kept, and the default matches the design constant", () => {
+  const { config, errors, warnings } = loadConfig(`version: 1
+embedding:
+  maxFrames: 2
+groups: []
+`);
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  assert.equal(config.embedding.maxFrames, 2);
+  assert.equal(FRAME_DEFAULT_MAX, DEFAULTS.maxFrames);
+  assert.equal(FRAME_DEFAULT_MAX, 4);
+});
+
+test("an embedding block that is not a mapping warns and leaves the defaults", () => {
+  const { config, errors, warnings } = loadConfig(`version: 1
+embedding: 4
+groups: []
+`);
+
+  assert.deepEqual(errors, []);
+  assert.match(messageFor(warnings, "embedding"), /expected a mapping/);
+  assert.equal(config.embedding.maxFrames, DEFAULTS.maxFrames);
+});
+
+test("an unknown key inside embedding is warned about, not silently accepted", () => {
+  const { errors, warnings } = loadConfig(`version: 1
+embedding:
+  maxFrames: 2
+  maxTabs: 9
+groups: []
+`);
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(paths(warnings), ["embedding.maxTabs"]);
+});
+
+test("embedding.itemIds lists every embedded item in render order", () => {
+  const { config, errors } = loadConfig(`version: 1
+groups:
+  - name: Apps
+    items:
+      - name: One
+        url: https://one.example.com
+        embed: true
+      - name: Two
+        url: https://two.example.com
+    groups:
+      - name: Nested
+        items:
+          - name: Three
+            url: https://three.example.com
+            embed: true
+`);
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(config.embedding.itemIds, ["apps/one", "apps/nested/three"]);
+});
+
+test("the recognised token sets are the only place the vocabulary is written down", () => {
+  assert.ok(ALLOW_TOKENS.includes("fullscreen"));
+  assert.ok(ALLOW_TOKENS.includes("clipboard-read") && ALLOW_TOKENS.includes("clipboard-write"));
+  for (const sensitive of ["camera", "microphone", "geolocation", "display-capture"]) {
+    assert.equal(ALLOW_TOKENS.includes(sensitive), false, `${sensitive} must not be delegable`);
+  }
+  assert.ok(SANDBOX_TOKENS.every((token) => token.startsWith("allow-")));
+  assert.equal(Object.isFrozen(ALLOW_TOKENS), true);
+  assert.equal(Object.isFrozen(SANDBOX_TOKENS), true);
 });
