@@ -1,0 +1,240 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  KUSTOMIZE_VERSION: v5.8.3
+  KUBECONFORM_VERSION: v0.8.0
+  # Keep in step with the budget documented in docs/CONFIGURATION.md. The real
+  # limit is the 1MiB ConfigMap ceiling; this fails long before a cluster does.
+  SRC_CEILING_BYTES: 307200
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [24, 25]
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+
+      # Note the glob. `node --test tests/` fails on Node 25, which treats a
+      # bare directory as a module entry point rather than a tree to scan.
+      - name: Unit tests
+        run: node --test 'tests/**/*.test.mjs'
+
+      - name: Shipped config examples validate
+        run: |
+          node tools/validate-config.mjs --strict \
+            examples/config/*.yaml \
+            examples/kustomize/config.yaml \
+            deploy/kustomize/base/config/config.yaml
+
+      - name: A broken config is rejected
+        run: |
+          printf 'version: 1\ngroups:\n  - name: A\n    items:\n      - name: B\n' > "$RUNNER_TEMP/broken.yaml"
+          if node tools/validate-config.mjs "$RUNNER_TEMP/broken.yaml"; then
+            echo "::error::the validator accepted an item with no url"
+            exit 1
+          fi
+
+  invariants:
+    name: Invariants
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+
+      - name: Every module parses
+        run: |
+          for f in src/assets/*.js tools/*.mjs; do node --check "$f"; done
+
+      # The page is served under script-src 'self'; style-src 'self'. Anything
+      # inline silently breaks it in production, where there is no console to
+      # watch, so it fails here instead.
+      - name: No inline script, style or handler
+        run: |
+          status=0
+          # grep -E has no lookahead, so this is two passes: every <script>
+          # line, minus the ones that load a file.
+          if grep -rn '<script' --include='*.html' src/ | grep -v 'src='; then
+            echo "::error::inline <script> found; the CSP forbids it"; status=1
+          fi
+          if grep -rnE '\bstyle="' --include='*.html' --include='*.js' src/; then
+            echo "::error::style attribute found; set properties via the CSSOM instead"; status=1
+          fi
+          if grep -rnE '\bon(click|load|error|change|input|submit|keydown|mouseover)="' --include='*.html' src/; then
+            echo "::error::inline event handler found; use addEventListener"; status=1
+          fi
+          if grep -rnE '\beval\(|new Function\(|javascript:' --include='*.js' --include='*.html' src/assets/app.js src/assets/render.js src/assets/app.css src/index.html 2>/dev/null; then
+            echo "::error::eval, Function constructor or javascript: URL found"; status=1
+          fi
+          exit $status
+
+      # A ConfigMap key cannot contain a slash, so the served tree is flat and
+      # two files sharing a basename would overwrite each other.
+      - name: Basenames under src/ are unique
+        run: |
+          dupes=$(find src -type f -printf '%f\n' | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "::error::duplicate basenames under src/: $dupes"
+            exit 1
+          fi
+
+      - name: src/ fits the ConfigMap budget
+        run: |
+          size=$(du -sb src | cut -f1)
+          echo "src/ is $size bytes, ceiling $SRC_CEILING_BYTES"
+          if [ "$size" -gt "$SRC_CEILING_BYTES" ]; then
+            echo "::error::src/ is $size bytes, over the $SRC_CEILING_BYTES ceiling"
+            exit 1
+          fi
+
+      # The install is "point kustomize at this repo", so every file the
+      # generator names has to exist and every file in src/ has to be shipped.
+      - name: The app ConfigMap lists exactly what src/ contains
+        run: |
+          listed=$(grep -oE 'src/[A-Za-z0-9_./-]+' kustomization.yaml | sort -u)
+          actual=$(find src -type f | sort -u)
+          if [ "$listed" != "$actual" ]; then
+            echo "::error::kustomization.yaml and src/ disagree"
+            diff <(echo "$listed") <(echo "$actual") || true
+            exit 1
+          fi
+
+      - name: The vendored parser still matches its recorded hash
+        run: |
+          recorded=$(grep -oE '[0-9a-f]{64}' THIRD-PARTY.md | head -1)
+          actual=$(sha256sum src/assets/js-yaml.mjs | cut -d' ' -f1)
+          if [ "$recorded" != "$actual" ]; then
+            echo "::error::src/assets/js-yaml.mjs does not match THIRD-PARTY.md ($actual)"
+            exit 1
+          fi
+
+  manifests:
+    name: Manifests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v3.19.0
+
+      - name: Install kustomize and kubeconform
+        run: |
+          curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+            | tar xz -C /usr/local/bin kustomize
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar xz -C /usr/local/bin kubeconform
+          kustomize version && kubeconform -v
+
+      # No --load-restrictor flag anywhere, deliberately. The kustomization is
+      # at the repository root precisely so the default restrictor is enough,
+      # which is what lets Argo CD install this without a repo-server-wide
+      # build option. If this step ever needs the flag, that promise is broken.
+      - name: Render the install
+        run: kustomize build . > rendered.yaml
+
+      - name: Render the examples
+        run: |
+          kustomize build examples/flux > rendered-flux.yaml
+          kustomize build examples/argocd > rendered-argocd.yaml
+
+      - name: Schema-check the rendered manifests
+        run: |
+          kubeconform -strict -summary -verbose \
+            -schema-location default \
+            rendered.yaml
+
+      - name: Schema-check the examples against CRD schemas
+        run: |
+          kubeconform -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            rendered-flux.yaml rendered-argocd.yaml
+
+      - name: Pod hardening survives rendering
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(open("rendered.yaml")) if d]
+          dep = next(d for d in docs if d["kind"] == "Deployment")
+          pod = dep["spec"]["template"]["spec"]
+          con = pod["containers"][0]
+          problems = []
+          if not pod.get("securityContext", {}).get("runAsNonRoot"):
+              problems.append("runAsNonRoot is not set")
+          if pod.get("securityContext", {}).get("seccompProfile", {}).get("type") != "RuntimeDefault":
+              problems.append("seccompProfile is not RuntimeDefault")
+          sc = con.get("securityContext", {})
+          if not sc.get("readOnlyRootFilesystem"):
+              problems.append("readOnlyRootFilesystem is not set")
+          if sc.get("allowPrivilegeEscalation") is not False:
+              problems.append("allowPrivilegeEscalation is not false")
+          if sc.get("capabilities", {}).get("drop") != ["ALL"]:
+              problems.append("capabilities are not all dropped")
+          # A subPath mount is never updated by kubelet, which would silently
+          # break live reload. This is the one that is easy to reintroduce.
+          for mount in con.get("volumeMounts", []):
+              if "subPath" in mount:
+                  problems.append(f"subPath on volumeMount {mount['name']}")
+          if problems:
+              print("::error::" + "; ".join(problems))
+              sys.exit(1)
+          print("hardening intact, no subPath mounts")
+          PY
+
+      - name: Helm chart
+        run: |
+          helm lint deploy/helm/quickportal --strict
+          helm template quickportal deploy/helm/quickportal > /dev/null
+          helm template quickportal deploy/helm/quickportal \
+            --set ingress.enabled=true \
+            --set ingress.hosts[0].host=portal.example.com \
+            --set ingress.hosts[0].paths[0].path=/ \
+            --set ingress.hosts[0].paths[0].pathType=Prefix > /dev/null
+          helm package deploy/helm/quickportal -d "$RUNNER_TEMP" > /dev/null
+
+      # The chart and the kustomize path must ship the same files, or a Helm
+      # user gets a different app from a Flux user at the same tag.
+      - name: Chart and kustomize ship identical app files
+        run: |
+          kustomize build . > /tmp/k.yaml
+          helm template quickportal deploy/helm/quickportal > /tmp/h.yaml
+          python3 - <<'PY'
+          import sys, yaml
+          def appmap(path):
+              for d in yaml.safe_load_all(open(path)):
+                  if d and d["kind"] == "ConfigMap" and d["metadata"]["name"].startswith("quickportal-app"):
+                      return d.get("data", {})
+              return {}
+          k, h = appmap("/tmp/k.yaml"), appmap("/tmp/h.yaml")
+          if not k or not h:
+              print("::error::could not find the app ConfigMap in both renders")
+              sys.exit(1)
+          if k.keys() != h.keys():
+              print(f"::error::different files: kustomize={sorted(k)} helm={sorted(h)}")
+              sys.exit(1)
+          drift = [key for key in k if k[key] != h[key]]
+          if drift:
+              print(f"::error::same filenames, different contents: {drift}")
+              sys.exit(1)
+          print(f"both ship {len(k)} identical files")
+          PY
