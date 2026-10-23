@@ -37,6 +37,6 @@
 
 ## 6. Release
 
-- [ ] 6.1 Verify on a cluster: an embedded app that frames, one that refuses, and a config change while a frame is in use
-- [ ] 6.2 Confirm an upgrade with no embedded items changes nothing on the wire
-- [ ] 6.3 Tag the minor release and document the two steps to enable embedding
+- [x] 6.1 Verify on a cluster: an embedded app that frames, one that refuses, and a config change while a frame is in use
+- [x] 6.2 Confirm an upgrade with no embedded items changes nothing on the wire
+- [x] 6.3 Tag the minor release and document the two steps to enable embedding
