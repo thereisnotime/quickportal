@@ -1,2 +1,2 @@
 * text=auto eol=lf
-src/vendor/** linguist-vendored
+src/assets/js-yaml.mjs linguist-vendored

@@ -1,0 +1,198 @@
+// Tests for src/assets/state.js. No DOM: every function takes the storage
+// object as its last argument, and the no-storage path is exercised explicitly.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  DEFAULT_THEME,
+  getTheme,
+  setTheme,
+  isCollapsed,
+  setCollapsed,
+  getQuery,
+  setQuery,
+  createMemoryStorage,
+} from "../src/assets/state.js";
+
+/** A storage object that throws on every access, like a blocked private window. */
+function hostileStorage() {
+  return {
+    getItem() {
+      throw new DOMExceptionLike("storage is blocked");
+    },
+    setItem() {
+      throw new DOMExceptionLike("storage is blocked");
+    },
+    removeItem() {
+      throw new DOMExceptionLike("storage is blocked");
+    },
+  };
+}
+
+class DOMExceptionLike extends Error {}
+
+/** Storage that is present but full, so reads work and writes fail. */
+function fullStorage(initial = {}) {
+  const store = createMemoryStorage(initial);
+  return {
+    getItem: (key) => store.getItem(key),
+    setItem() {
+      throw new DOMExceptionLike("QuotaExceededError");
+    },
+    removeItem: (key) => store.removeItem(key),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+
+test("theme defaults to auto and round-trips through storage", () => {
+  const storage = createMemoryStorage();
+
+  assert.equal(getTheme(storage), DEFAULT_THEME);
+  assert.equal(setTheme("dark", storage), true);
+  assert.equal(getTheme(storage), "dark");
+  assert.equal(setTheme("light", storage), true);
+  assert.equal(getTheme(storage), "light");
+});
+
+test("an unknown theme is neither stored nor returned", () => {
+  const storage = createMemoryStorage({ "quickportal.theme": "sepia" });
+
+  assert.equal(getTheme(storage), DEFAULT_THEME, "junk in storage falls back to the default");
+  assert.equal(setTheme("sepia", storage), false);
+  assert.equal(setTheme(undefined, storage), false);
+});
+
+// ---------------------------------------------------------------------------
+// Collapse state
+// ---------------------------------------------------------------------------
+
+test("collapse state falls back to the config's initial state until it is set", () => {
+  const storage = createMemoryStorage();
+
+  assert.equal(isCollapsed("media", false, storage), false);
+  assert.equal(isCollapsed("media", true, storage), true, "the config's collapsed: true is honoured");
+
+  setCollapsed("media", false, storage);
+  assert.equal(isCollapsed("media", true, storage), false, "a remembered choice wins over the config");
+});
+
+test("collapse state is remembered per id and ids do not interfere", () => {
+  const storage = createMemoryStorage();
+
+  setCollapsed("media", true, storage);
+  setCollapsed("media/downloads", false, storage);
+  setCollapsed("infra", true, storage);
+
+  assert.equal(isCollapsed("media", false, storage), true);
+  assert.equal(isCollapsed("media/downloads", true, storage), false);
+  assert.equal(isCollapsed("infra", false, storage), true);
+  assert.equal(isCollapsed("unseen", false, storage), false);
+});
+
+test("a corrupt collapse entry is ignored rather than thrown", () => {
+  for (const raw of ["not json", "[]", "null", '"text"']) {
+    const storage = createMemoryStorage({ "quickportal.collapsed": raw });
+    assert.equal(isCollapsed("media", true, storage), true);
+    assert.equal(setCollapsed("media", false, storage), true);
+    assert.equal(isCollapsed("media", true, storage), false);
+  }
+});
+
+test("a non-boolean remembered value falls back to the given state", () => {
+  const storage = createMemoryStorage({ "quickportal.collapsed": '{"media":"yes"}' });
+
+  assert.equal(isCollapsed("media", true, storage), true);
+  assert.equal(isCollapsed("media", false, storage), false);
+});
+
+test("setCollapsed refuses an empty id", () => {
+  const storage = createMemoryStorage();
+
+  assert.equal(setCollapsed("", true, storage), false);
+  assert.equal(setCollapsed(undefined, true, storage), false);
+});
+
+// ---------------------------------------------------------------------------
+// Query
+// ---------------------------------------------------------------------------
+
+test("the query round-trips and clearing it removes the key", () => {
+  const storage = createMemoryStorage();
+
+  assert.equal(getQuery(storage), "");
+  assert.equal(setQuery("grafana", storage), true);
+  assert.equal(getQuery(storage), "grafana");
+
+  assert.equal(setQuery("", storage), true);
+  assert.equal(getQuery(storage), "");
+  assert.equal(storage.getItem("quickportal.query"), null);
+});
+
+test("a non-string query is treated as empty", () => {
+  const storage = createMemoryStorage({ "quickportal.query": "old" });
+
+  setQuery(null, storage);
+  assert.equal(getQuery(storage), "");
+});
+
+// ---------------------------------------------------------------------------
+// Storage that is absent, blocked or full
+// ---------------------------------------------------------------------------
+
+test("with no usable storage every getter returns its default and setters report failure", () => {
+  // Called with no storage argument: under Node there is no working
+  // localStorage to fall back to, which is the same situation as a browser that
+  // blocks it.
+  assert.equal(getTheme(), DEFAULT_THEME);
+  assert.equal(getQuery(), "");
+  assert.equal(isCollapsed("media", true), true);
+
+  assert.equal(setTheme("dark"), false);
+  assert.equal(setCollapsed("media", true), false);
+  assert.equal(setQuery("grafana"), false);
+});
+
+test("a storage object missing the Storage methods is treated as no storage", () => {
+  const storage = {};
+
+  assert.equal(getTheme(storage), DEFAULT_THEME);
+  assert.equal(getQuery(storage), "");
+  assert.equal(isCollapsed("media", true, storage), true);
+  assert.equal(setTheme("dark", storage), false);
+  assert.equal(setQuery("grafana", storage), false);
+});
+
+test("storage that throws on every access still renders defaults", () => {
+  const storage = hostileStorage();
+
+  assert.equal(getTheme(storage), DEFAULT_THEME);
+  assert.equal(getQuery(storage), "");
+  assert.equal(isCollapsed("media", true, storage), true);
+  assert.equal(setTheme("dark", storage), false);
+  assert.equal(setCollapsed("media", true, storage), false);
+  assert.equal(setQuery("grafana", storage), false);
+});
+
+test("a full storage reports the failed write but keeps reading", () => {
+  const storage = fullStorage({ "quickportal.theme": "dark" });
+
+  assert.equal(getTheme(storage), "dark");
+  assert.equal(setTheme("light", storage), false);
+  assert.equal(getTheme(storage), "dark", "the earlier value is untouched");
+});
+
+test("a getter that throws inside the property access is survivable", () => {
+  const storage = {
+    get getItem() {
+      throw new DOMExceptionLike("blocked");
+    },
+  };
+
+  assert.throws(() => storage.getItem, DOMExceptionLike, "the stub really does throw");
+  assert.doesNotThrow(() => getTheme(storage));
+  assert.equal(getTheme(storage), DEFAULT_THEME);
+});

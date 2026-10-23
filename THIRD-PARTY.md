@@ -9,7 +9,7 @@ and stays inside a `script-src 'self'` Content-Security-Policy.
 - Upstream: https://github.com/nodeca/js-yaml
 - Version: 4.1.0
 - Licence: MIT
-- Vendored file: `src/vendor/js-yaml.mjs` (the unminified ESM build, `dist/js-yaml.mjs`)
+- Vendored file: `src/assets/js-yaml.mjs` (the unminified ESM build, `dist/js-yaml.mjs`)
 - SHA-256: `16f210b939b359b6ec8dde581eb62c157185711dc7b719b33779c43db5c31a91`
 
 Unminified on purpose: this is the one piece of code here that nobody in this

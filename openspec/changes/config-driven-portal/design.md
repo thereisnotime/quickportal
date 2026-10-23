@@ -129,7 +129,7 @@ This is the contract. The modules are written independently against it.
 
 A ConfigMap key must match `[-._a-zA-Z0-9]+`, so a single ConfigMap cannot
 reproduce a directory tree. `configMapGenerator` keys files by basename, which
-means the repository can keep `src/assets/` and `src/vendor/` for the sake of
+means the repository can keep `src/assets/` and `src/assets/` for the sake of
 reading it, while the served tree is flat:
 
 ```
@@ -145,6 +145,32 @@ relative path (`./config.js`, `./js-yaml.mjs`, `./app.css`), basenames across
 `./config/config.yaml`. The user's config is a separate volume mounted at a
 path nested inside the app's mount, which Kubernetes supports and which keeps
 an app upgrade from touching the user's config or the reverse.
+
+### Validation policy, and the issue paths
+
+Settled while implementing, and binding on the renderer and the docs:
+
+- An issue path is a JSON-ish path (`groups[0].items[2].url`) or the literal
+  `config` for a document-level problem such as a parse failure, because the
+  renderer prints `path: message` and an empty path renders as `": ..."`.
+- **Errors**, which stop the tree rendering: a missing or future `version`, a
+  document that is not a mapping, a missing `name` or `url`, broken structure
+  such as `items` not being a list, duplicate ids, an unresolvable set target,
+  and a `javascript:` or `vbscript:` URL. The CSP does not stop an
+  `href="javascript:..."`, and portal configs get copied between people, so that
+  one is validation rather than taste.
+- **Warnings**, which render anyway: unknown keys, a bad enum value or wrong
+  scalar type (falling back to the documented default), and nesting past the
+  depth cap.
+- Entries that error are dropped from the tree; a partially valid set keeps its
+  resolvable targets.
+- Ids are global across groups and items, derived ids are the ancestor chain
+  joined with `/` (`media/downloads/queue`), and **set ids are a separate
+  namespace**, since nothing resolves a set by id.
+- `resolveTargets` **de-duplicates by URL**, so a set naming both a group and one
+  of its items opens that item once rather than twice. Its `unresolved` entries
+  are the raw target strings; turning those into `{path, message}` errors is
+  `normalizeConfig`'s job.
 
 ### Tests without a toolchain
 
