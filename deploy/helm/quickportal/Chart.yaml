@@ -3,9 +3,9 @@ name: quickportal
 description: Build-free static start page for Kubernetes, driven entirely by a ConfigMap
 type: application
 # Chart version; bump on any chart change.
-version: 0.4.0
+version: 0.4.1
 # The app ships as files in this chart, so appVersion tracks the repository tag.
-appVersion: "0.4.0"
+appVersion: "0.4.1"
 kubeVersion: ">=1.23.0-0"
 keywords:
   - dashboard

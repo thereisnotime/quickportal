@@ -43,7 +43,7 @@ namespace: quickportal
 
 resources:
   # Pin a tag, never a branch.
-  - https://git.example.com/example-org/quickportal.git//?ref=v0.4.0
+  - https://git.example.com/example-org/quickportal.git//?ref=v0.4.1
 
 configMapGenerator:
   # Your config, with the diagram section. The renderer URL here has to be
