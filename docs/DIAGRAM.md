@@ -306,10 +306,34 @@ for the file you commit is "my own SVG does something I did not intend", not "a
 stranger is attacking me" — but people paste SVGs from the internet, so the
 allowlist is applied either way.
 
-**When sanitisation removes anything, the panel says how much.** Silently
-altering your diagram would be worse than telling you: if an arrow vanished, the
-drop count is where to look. A diagram containing only shapes, paths, text,
-groups, gradients, markers and fragment references loses nothing.
+Kept, because none of it can do anything:
+
+- `data-*` and `aria-*` attributes. Nothing in the platform acts on a `data-`
+  attribute, the only thing that could read one is script, and script is what
+  this guarantees is absent. `aria-*` is string metadata and id references.
+  A mermaid flowchart carries about 260 of them; removing them would have meant
+  announcing 260 removals on a diagram from which nothing dangerous had gone.
+- `:root` and `:host` rules, **rewritten to the diagram's own container**. A
+  renderer defines its custom properties there (mermaid sets
+  `--mermaid-font-family`), and scoping is exactly the operation that makes
+  such a rule safe: it applies to the diagram and to nothing else on the page.
+  A `:root` attached to another compound, such as `.a:root`, is still refused.
+
+**The panel warns you only when something was removed because it was
+dangerous.** That means a script, an `on*` handler, a `<foreignObject>`, an
+external reference, or CSS carrying `url()`, `@import`, `expression()` or
+`behavior:`. When the notice appears it lists everything that went, not only
+the dangerous part, because that is what you have to go and find in your own
+file.
+
+Things the allowlist simply cannot carry are removed quietly. The one you will
+meet is `@keyframes`: its name is global to the document, so it cannot be
+scoped, and mermaid emits two in every diagram whether or not anything
+animates. Warning about those would have meant warning about every diagram
+forever, which costs the warning its meaning.
+
+A diagram containing only shapes, paths, text, groups, gradients, markers and
+fragment references loses nothing and shows no notice.
 
 ### A renderer's CSS is extracted, not inlined
 
@@ -387,7 +411,7 @@ Every failure degrades to a notice and leaves the bookmark tree working.
 | "could not be fetched", naming a path | `diagram.src` is set but the file is not at that served path. Check it is a key of `quickportal-config` and that the path starts `./config/`. |
 | Actual and permitted sizes | Over `maxBytes`. |
 | A parse error | The file is not valid SVG. Check you committed the SVG and not the source. |
-| "n dropped" and a diagram | Sanitisation removed something. Usually `securityLevel` on a renderer, or an exporter emitting `<foreignObject>` text. |
+| "The diagram was altered: n removed" | Sanitisation removed something it judged dangerous. Usually `securityLevel` on a renderer, or an exporter emitting `<foreignObject>` text. Benign removals do not produce this. |
 | The diagram needs an origin | `script-src` forbids the renderer's origin, or that origin is unreachable. See above. |
 | A blank page, no portal at all | `'self'` was dropped from `script-src`. The portal's own modules are being refused. |
 

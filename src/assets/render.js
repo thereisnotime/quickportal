@@ -1679,7 +1679,13 @@ function updateDiagramNotices(parts, m) {
   const fallback = m.fallback || null;
   const signature = JSON.stringify([
     error && [error.kind, error.path, error.bytes, error.maxBytes, error.url, error.detail],
-    dropped && [dropped.elements, dropped.attributes, dropped.declarations, dropped.rules],
+    dropped && [
+      dropped.elements,
+      dropped.attributes,
+      dropped.declarations,
+      dropped.rules,
+      dropped.foreignObjects,
+    ],
     fallback && [fallback.reason, fallback.url, fallback.path],
   ]);
   if (parts.notices.dataset.signature === signature) return;
@@ -1728,14 +1734,39 @@ function diagramFallbackNotice(fallback) {
   };
 }
 
+/**
+ * What to tell the reader about, which is not the same as what was removed.
+ *
+ * The notice says an SVG is executable content and that something was taken
+ * out of theirs. That is a claim about danger, so it is made only when
+ * something was removed BECAUSE it could execute or reach outside the
+ * diagram: `dropped.unsafe`, counted by the sanitiser at each such site.
+ *
+ * Everything else the allowlist cannot carry, a @keyframes block, an
+ * attribute nobody acts on, a malformed declaration, is removed quietly. It
+ * used to be announced, and the result was a warning on every healthy mermaid
+ * diagram ("261 attributes and 3 style rules removed") in which nothing
+ * dangerous had been present at all. A warning that fires on healthy input
+ * teaches the reader to dismiss it, which costs exactly the case it exists
+ * for.
+ *
+ * The counts shown are still the real ones: when the notice does appear it
+ * reports everything that went, not only the dangerous part, because that is
+ * what the reader has to go and look for in their diagram.
+ */
 function normalizeDropCounts(dropped) {
   if (!dropped) return null;
+  if (!countOf(dropped.unsafe)) return null;
   const elements = countOf(dropped.elements);
   const attributes = countOf(dropped.attributes);
   const declarations = countOf(dropped.declarations);
   const rules = countOf(dropped.rules);
   if (!(elements + attributes + declarations + rules)) return null;
-  return { elements, attributes, declarations, rules };
+  // foreignObjects is carried through, not summarised: diagramDropNotice reads
+  // it to name the mermaid option that stops labels disappearing. It used to
+  // be dropped here, so that hint could never fire however many foreignObjects
+  // went.
+  return { elements, attributes, declarations, rules, foreignObjects: countOf(dropped.foreignObjects) };
 }
 
 function countOf(value) {

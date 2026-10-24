@@ -653,12 +653,25 @@ const LEGITIMATE = svg(
   'width="100" height="100" role="img" aria-labelledby="t" preserveAspectRatio="xMidYMid meet" version="1.1"',
 );
 
+/** The counter shape sanitizeSvg starts from, for the scopeCss tests. */
+function freshDropped() {
+  return {
+    elements: 0,
+    attributes: 0,
+    declarations: 0,
+    rules: 0,
+    foreignObjects: 0,
+    unsafe: 0,
+    total: 0,
+  };
+}
+
 test('a legitimate diagram loses nothing at all', () => {
   const out = sanitize(LEGITIMATE);
   assert.equal(out.error, undefined);
   assert.deepEqual(
     out.dropped,
-    { elements: 0, attributes: 0, declarations: 0, rules: 0, foreignObjects: 0, total: 0 },
+    { elements: 0, attributes: 0, declarations: 0, rules: 0, foreignObjects: 0, unsafe: 0, total: 0 },
     'a sanitiser that mangles good input is as useless as one that lets scripts through',
   );
 });
@@ -788,22 +801,73 @@ test('selector lists, @media and comments all scope correctly', () => {
 
 test('a rule that cannot be scoped safely is dropped and counted, never emitted bare', () => {
   const cases = [
-    ':root { --x: 1 }',
     'html { fill: red }',
     'body .node { fill: red }',
-    '.a, :root { fill: red }',
     '@font-face { font-family: X; src: url(https://example.org/f.woff2) }',
     '@keyframes spin { from { opacity: 0 } }',
     '@charset "utf-8";',
     '@namespace svg url(http://www.w3.org/2000/svg);',
   ];
   for (const css of cases) {
-    const dropped = { elements: 0, attributes: 0, declarations: 0, rules: 0, foreignObjects: 0, total: 0 };
+    const dropped = freshDropped();
     const out = scopeCss(css, 'diagram-panel', dropped);
     assert.ok(!/^\s*[^#@]/.test(out), `${css} -> ${out}`);
     assert.ok(!/:root|html \{|body |@font-face|@keyframes|@charset|@namespace/.test(out), css);
     assert.ok(dropped.rules >= 1, `${css} was counted`);
   }
+});
+
+test(':root is rewritten to the container, not refused', () => {
+  // A renderer puts its custom properties on :root (mermaid defines
+  // --mermaid-font-family there). Refusing the rule lost them and reported
+  // every healthy diagram as altered; the point of scoping is to move such a
+  // rule onto the container, which is an ancestor of the diagram and of
+  // nothing else on the page.
+  for (const css of [':root { --x: 1 }', '#graph :root { --x: 1 }', ':root .node { fill: red }']) {
+    const dropped = freshDropped();
+    const out = scopeCss(css, 'diagram-panel', dropped);
+    assert.ok(out.includes('#diagram-panel'), `${css} -> ${out}`);
+    assert.ok(!/:root/.test(out), `${css} still mentions :root: ${out}`);
+    assert.equal(dropped.rules, 0, `${css} was counted as a drop`);
+    assert.equal(dropped.unsafe, 0, `${css} was called unsafe`);
+  }
+});
+
+test('a rewritten :root cannot reach outside the container', () => {
+  // The guarantee the old refusal was protecting: whatever :root becomes, it
+  // must still be a selector that only matches inside the panel.
+  const out = scopeCss(':root { --x: 1 }', 'diagram-panel', freshDropped());
+  for (const selector of out.split('{')[0].split(',')) {
+    const s = selector.trim();
+    assert.ok(s === '#diagram-panel' || s.startsWith('#diagram-panel '), s);
+  }
+});
+
+test('a selector mixing :root with an escape is still refused', () => {
+  const dropped = freshDropped();
+  const out = scopeCss(':root html { fill: red }', 'diagram-panel', dropped);
+  assert.equal(out, '');
+  assert.equal(dropped.rules, 1);
+  assert.equal(dropped.unsafe, 1);
+});
+
+test('.a:root is not a document-root compound and is still refused', () => {
+  assert.equal(scopeSelector('.a:root', '#d'), null);
+});
+
+test('an unscopable at-rule is dropped quietly, an escaping one is not', () => {
+  // Both go. Only one is a claim worth putting on screen: @keyframes is a list
+  // of declarations that cannot leave the sheet, and mermaid emits two in
+  // every diagram. @import is how a stylesheet reaches another origin.
+  const inert = freshDropped();
+  scopeCss('@keyframes spin { from { opacity: 0 } }', 'diagram-panel', inert);
+  assert.equal(inert.rules, 1);
+  assert.equal(inert.unsafe, 0, 'a keyframes block is not a security event');
+
+  const escaping = freshDropped();
+  scopeCss('@import url(https://example.org/x.css);', 'diagram-panel', escaping);
+  assert.equal(escaping.rules, 1);
+  assert.equal(escaping.unsafe, 1);
 });
 
 test('an unbalanced or injected selector is refused', () => {

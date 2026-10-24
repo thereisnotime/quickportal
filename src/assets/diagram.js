@@ -124,6 +124,34 @@ export const ALLOWED_ATTRIBUTES = new Set(
 );
 
 /**
+ * Attribute names that carry no behaviour whatever their value.
+ *
+ * `data-*` is inert by definition: nothing in the platform acts on it, and the
+ * only thing that could read it is script, which this module guarantees is not
+ * present. `aria-*` is string metadata and id references, never a URL and
+ * never code.
+ *
+ * They are kept rather than dropped because a renderer emits a great many of
+ * them and every one would otherwise be reported as an alteration. A single
+ * mermaid flowchart carries about 260 (`data-id` per node and edge,
+ * `data-points`, `data-et`, `data-look`, `aria-roledescription`), so the panel
+ * announced "261 attributes removed" on a diagram from which nothing
+ * dangerous had been removed at all. A warning that fires on healthy input is
+ * worse than no warning: it trains the reader to ignore the one that matters.
+ *
+ * They still pass isSafeValue() like everything else.
+ */
+const INERT_ATTRIBUTE = /^(?:data|aria)-[A-Za-z0-9_.:-]+$/;
+
+/**
+ * @param {string} name
+ * @returns {boolean} whether the attribute may be copied at all.
+ */
+export function isAllowedAttribute(name) {
+  return ALLOWED_ATTRIBUTES.has(name) || INERT_ATTRIBUTE.test(name);
+}
+
+/**
  * Attributes whose value must be a pure fragment reference (`#id`) or nothing.
  *
  * `from`, `to`, `values`, `begin`, `by` and `end` are the animation
@@ -507,6 +535,7 @@ function rebuild(srcEl, ctx) {
   // an operator who forgot the xmlns gets a working diagram, not a silent one.
   if (ns !== null && ns !== SVG_NS) {
     ctx.dropped.elements += countElements(srcEl);
+    ctx.dropped.unsafe += 1;
     return null;
   }
 
@@ -526,6 +555,10 @@ function rebuild(srcEl, ctx) {
     // so the panel names the option instead.
     if (name === 'foreignObject') ctx.dropped.foreignObjects += 1;
     ctx.dropped.elements += countElements(srcEl);
+    // Every element drop is reportable. Unlike attributes, an element this
+    // module will not rebuild is rare, and when it happens the picture
+    // changes: a foreignObject takes its labels with it.
+    ctx.dropped.unsafe += 1;
     return null;
   }
 
@@ -576,10 +609,12 @@ function copyAttributes(srcEl, el, ctx) {
       }
       if (ATTR_URLISH.has(name) && !isFragment(value)) {
         ctx.dropped.attributes += 1;
+        ctx.dropped.unsafe += 1;
         continue;
       }
       if (!isSafeValue(value)) {
         ctx.dropped.attributes += 1;
+        ctx.dropped.unsafe += 1;
         continue;
       }
       el.setAttributeNS(ns, name, value);
@@ -591,8 +626,15 @@ function copyAttributes(srcEl, el, ctx) {
       continue;
     }
 
-    if (!ALLOWED_ATTRIBUTES.has(name)) {
+    if (!isAllowedAttribute(name)) {
       ctx.dropped.attributes += 1;
+      // An `on*` handler or a reference-bearing name was removed because it
+      // could have done something. Anything else was removed because the
+      // allowlist does not carry it, which is not a security event and is not
+      // reported as one. See normalizeDropCounts in render.js.
+      if (/^on/i.test(name) || ATTR_URLISH.has(lower) || !isSafeValue(value)) {
+        ctx.dropped.unsafe += 1;
+      }
       continue;
     }
 
@@ -602,12 +644,14 @@ function copyAttributes(srcEl, el, ctx) {
     if (ATTR_URLISH.has(lower)) {
       if (value.trim() !== '' && !isFragment(value)) {
         ctx.dropped.attributes += 1;
+        ctx.dropped.unsafe += 1;
         continue;
       }
     }
 
     if (!isSafeValue(value)) {
       ctx.dropped.attributes += 1;
+      ctx.dropped.unsafe += 1;
       continue;
     }
 
@@ -697,7 +741,15 @@ function emitNodes(nodes, prefix, dropped) {
         // @import, @charset, @namespace: no body, and nothing good inside.
         // @font-face, @keyframes, @property: a body that prefixing cannot
         // scope. Both are drops, because the alternative is letting them out.
+        //
+        // Only the first group is reported. A bodyless at-rule is how a
+        // stylesheet reaches another origin, which is the thing the panel's
+        // warning is about; @keyframes is a list of declarations that cannot
+        // leave the sheet it is in, and mermaid emits two of them in every
+        // diagram whether or not anything animates. Warning about those would
+        // mean warning about every diagram, forever, for nothing.
         dropped.rules += 1;
+        if (node.body === null) dropped.unsafe += 1;
         continue;
       }
       const inner = emitNodes(splitNodes(node.body), prefix, dropped);
@@ -718,7 +770,12 @@ function emitNodes(nodes, prefix, dropped) {
       if (scoped) selectors.push(scoped);
       else unsafe = true;
     }
-    if (unsafe) dropped.rules += 1;
+    if (unsafe) {
+      // A selector that would have escaped the container, after :root and
+      // :host have already been given their chance to be rewritten.
+      dropped.rules += 1;
+      dropped.unsafe += 1;
+    }
     if (selectors.length === 0) continue;
 
     const declarations = filterDeclarations(node.body, dropped);
@@ -735,13 +792,42 @@ const NESTABLE_AT_RULES = new Set(['media', 'supports', 'layer', 'container', 's
 const ESCAPING_SELECTOR = /:root\b|:host\b|::?(?:backdrop|view-transition)|(?:^|[\s,>+~(])(?:html|body)\b/i;
 
 /**
+ * `:root` and `:host` as a whole compound, so they can be rewritten rather
+ * than refused. Only where a combinator or the start of the selector precedes
+ * them: `.a:root` is a different claim and still falls to ESCAPING_SELECTOR.
+ */
+const DOCUMENT_ROOT_SELECTOR = /(^|[\s,>+~(])(?::root|:host(?:\([^()]*\))?)(?![\w-])/gi;
+
+/**
  * Prefix one selector, or refuse it.
  *
  * @returns {string|null} the scoped selector, or null when it is not safe
  */
 export function scopeSelector(selector, prefix) {
-  const s = String(selector ?? '').trim();
-  if (s === '') return null;
+  const raw = String(selector ?? '').trim();
+  if (raw === '') return null;
+
+  // `:root` in a renderer's stylesheet means "the top of my document". Inside
+  // the panel the top of the diagram's world is the container, so it is
+  // rewritten to the prefix rather than refused.
+  //
+  // Refusing it was wrong in a way that was easy to miss: mermaid puts its
+  // custom properties there (`:root { --mermaid-font-family: ... }`), so every
+  // mermaid diagram lost a rule and was reported as altered, on every load,
+  // forever. The rule was never a threat; it just could not stay where it was.
+  // Rewriting keeps the properties on an element that is an ancestor of the
+  // whole diagram and of nothing else on the page, which is what scoping is.
+  //
+  // The rewrite runs BEFORE the escape test, and :root is still in that test.
+  // That ordering is the whole guarantee: a document-root compound that the
+  // rewrite recognises is replaced, and any :root left over, `.a:root`, is one
+  // the rewrite deliberately did not claim and is refused as before.
+  //
+  // With no prefix, which is the export path, there is nothing to rewrite to
+  // and nothing to protect: a standalone file's :root is the <svg> itself,
+  // which is what the renderer meant, so it is put back.
+  const s = raw.replace(DOCUMENT_ROOT_SELECTOR, '$1').trim();
+  if (s === '') return prefix || ':root';
   // A brace, semicolon, at-sign or comment opener here means the split above
   // misread something; refusing is cheaper than guessing what.
   if (/[{};@]|\/\*/.test(s)) return null;
@@ -771,13 +857,12 @@ export function filterDeclarations(block, dropped = zeroDropped()) {
     }
     const prop = decl.slice(0, colon).trim();
     const value = decl.slice(colon + 1).trim();
-    if (
-      !/^(?:--)?-?[A-Za-z][A-Za-z0-9-]*$/.test(prop) ||
-      BANNED_PROPERTIES.has(prop.toLowerCase()) ||
-      value === '' ||
-      !isSafeValue(value)
-    ) {
+    const banned = BANNED_PROPERTIES.has(prop.toLowerCase()) || !isSafeValue(value);
+    if (!/^(?:--)?-?[A-Za-z][A-Za-z0-9-]*$/.test(prop) || banned || value === '') {
       dropped.declarations += 1;
+      // A banned property or a value carrying url(), @import, expression() or
+      // behavior:. A malformed declaration is just malformed.
+      if (banned) dropped.unsafe += 1;
       continue;
     }
     out.push([prop, value]);
@@ -1194,7 +1279,19 @@ function toScale(value) {
 // --- small shared helpers ---------------------------------------------------
 
 function zeroDropped() {
-  return { elements: 0, attributes: 0, declarations: 0, rules: 0, foreignObjects: 0, total: 0 };
+  // `unsafe` is not a fifth category: it is how many of the drops above were
+  // made because the construct could execute or reach outside the diagram,
+  // rather than because the allowlist has no way to carry it. The panel warns
+  // on that number, never on the raw totals.
+  return {
+    elements: 0,
+    attributes: 0,
+    declarations: 0,
+    rules: 0,
+    foreignObjects: 0,
+    unsafe: 0,
+    total: 0,
+  };
 }
 
 function total(dropped) {
