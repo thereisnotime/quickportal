@@ -13,7 +13,7 @@ spec:
   # reserved placeholder domains.
   url: https://git.example.com/example-org/quickportal.git
   ref:
-    tag: v0.3.0
+    tag: v0.4.0
   # Only the root kustomization, the manifests and the app files are needed;
   # ignore the rest so a docs commit does not churn the source revision.
   #
