@@ -916,12 +916,26 @@ kbd {
   display: contents;
 }
 
+/* One box, three fillings. An emoji, a set of initials and a favicon are all
+   the SAME element: render.js builds `.icon .icon-text`, `.icon .icon-initials`
+   or `.icon .icon-img`, never an inner node. So the size belongs to .icon and
+   to nothing else, and the variants may change how the box is filled but never
+   how big it is.
+
+   --icon-size exists so that the places which want a smaller one (a group
+   heading, a tab) set a single property and every variant follows. An earlier
+   version sized the img separately, with `width: 100%`; because .icon-slot is
+   display:contents the percentage resolved against the CARD, and an item with
+   a favicon URL rendered its icon at the full width of the card with the name
+   squeezed into a one-letter-per-line column beside it. Sizes go here. */
 .icon {
+  --icon-size: 1.9rem;
+
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 1.9rem;
-  height: 1.9rem;
+  width: var(--icon-size);
+  height: var(--icon-size);
   overflow: hidden;
   border-radius: 7px;
   background: var(--bg-sunken);
@@ -930,9 +944,10 @@ kbd {
   line-height: 1;
 }
 
+/* No width or height: the img IS the .icon box. object-fit keeps a favicon's
+   aspect ratio inside it whatever shape the author shipped, and the padding
+   stops a full-bleed square from touching the rounded corners. */
 .icon-img {
-  width: 100%;
-  height: 100%;
   padding: 2px;
   object-fit: contain;
   /* Transparent until it loads, so a slow favicon never flashes a frame. */
@@ -946,8 +961,8 @@ kbd {
 }
 
 .group-toggle .icon {
-  width: 1.6rem;
-  height: 1.6rem;
+  --icon-size: 1.6rem;
+
   font-size: 0.9rem;
 }
 
@@ -1404,8 +1419,8 @@ html[data-motion="reduced"] *::after {
 }
 
 .tab .icon {
-  width: 1.3rem;
-  height: 1.3rem;
+  --icon-size: 1.3rem;
+
   font-size: 0.75rem;
 }
 

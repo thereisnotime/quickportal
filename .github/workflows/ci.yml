@@ -129,6 +129,35 @@ jobs:
             exit 1
           fi
 
+      # .icon is one fixed box and the emoji, initials and favicon variants are
+      # that same element, not something nested inside it. A variant that sized
+      # itself shipped for three releases: .icon-img set `width: 100%`, which,
+      # because .icon-slot is display:contents, resolved against the card, and
+      # every item with a favicon URL rendered its icon at the full width of the
+      # card. None of the example configs used an image icon, so nothing caught
+      # it. Sizes belong to .icon, through --icon-size.
+      - name: Only .icon sets the icon size
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          css = open("src/assets/app.css").read()
+          # Comments first: one of them names .icon-img while explaining this
+          # very rule, and would otherwise be read as part of a selector.
+          css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+          bad = []
+          for match in re.finditer(r"([^{}]*)\{([^}]*)\}", css):
+              selector, body = match.group(1).strip(), match.group(2)
+              if not re.search(r"\.icon-[a-z-]+\s*(,|\{|$)", selector + "{"):
+                  continue
+              if re.search(r"^\s*(width|height)\s*:", body, re.M):
+                  bad.append(" ".join(selector.split()))
+          if bad:
+              print("::error::an .icon-* variant sets its own width or height: " + "; ".join(bad))
+              print("Set --icon-size on .icon instead; the variant IS the box.")
+              sys.exit(1)
+          print("ok: no .icon-* variant sizes itself")
+          PY
+
       - name: The vendored parser still matches its recorded hash
         run: |
           recorded=$(grep -oE '[0-9a-f]{64}' THIRD-PARTY.md | head -1)
