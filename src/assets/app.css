@@ -39,6 +39,12 @@
   --radius-lg: 14px;
   --shadow: 0 1px 2px rgb(16 20 28 / 6%), 0 1px 8px rgb(16 20 28 / 4%);
 
+  /* Every border and focus ring in this file is drawn at these two widths and
+     nowhere declares a width of its own, which is what lets high contrast
+     thicken all of them from one place. */
+  --hairline: 1px;
+  --focus-width: 3px;
+
   --sp-1: 0.25rem;
   --sp-2: 0.5rem;
   --sp-3: 0.75rem;
@@ -63,6 +69,34 @@
     monospace;
 
   color-scheme: light;
+
+  /* High-contrast palette for this theme. Defining it as its own --hc-* set,
+     rather than as another pair of theme blocks, is what keeps high contrast
+     from multiplying the token blocks: each theme declares what its high
+     contrast looks like, and the two activation blocks further down remap the
+     real tokens to these. Six near-identical blocks became two.
+
+     Values are measured, not eyeballed: body text clears 4.5:1 against every
+     surface it can land on and borders and focus rings clear 3:1. */
+  --hc-bg: #ffffff;
+  --hc-bg-elev: #ffffff;
+  --hc-bg-sunken: #f0f1f4;
+  --hc-bg-hover: #dfe5f2;
+  --hc-fg: #000000;
+  --hc-fg-muted: #1a1d23;
+  --hc-fg-faint: #262a31;
+  --hc-border: #1a1d23;
+  --hc-border-strong: #000000;
+  --hc-accent: #0a3ab5;
+  --hc-accent-fg: #ffffff;
+  --hc-accent-weak: #dce5fb;
+  --hc-focus: #0a3ab5;
+  --hc-danger: #8a0f14;
+  --hc-danger-bg: #fff2f2;
+  --hc-danger-border: #8a0f14;
+  --hc-warn: #4a2b00;
+  --hc-warn-bg: #fff8e6;
+  --hc-warn-border: #4a2b00;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -89,6 +123,28 @@
     --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 2px 10px rgb(0 0 0 / 25%);
 
     color-scheme: dark;
+
+    /* High-contrast palette for dark. See the light set above for why this is
+       a --hc-* block rather than another theme block. */
+    --hc-bg: #000000;
+    --hc-bg-elev: #0a0c10;
+    --hc-bg-sunken: #13161c;
+    --hc-bg-hover: #262b34;
+    --hc-fg: #ffffff;
+    --hc-fg-muted: #e8eaee;
+    --hc-fg-faint: #d4d8df;
+    --hc-border: #a7aeba;
+    --hc-border-strong: #ffffff;
+    --hc-accent: #a9c8ff;
+    --hc-accent-fg: #000000;
+    --hc-accent-weak: #16213a;
+    --hc-focus: #cfe0ff;
+    --hc-danger: #ffb5b5;
+    --hc-danger-bg: #1b0c0d;
+    --hc-danger-border: #ffb5b5;
+    --hc-warn: #ffd89c;
+    --hc-warn-bg: #1b1509;
+    --hc-warn-border: #ffd89c;
   }
 }
 
@@ -115,6 +171,99 @@
   --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 2px 10px rgb(0 0 0 / 25%);
 
   color-scheme: dark;
+
+  /* High-contrast palette for dark. See the light set above for why this is
+     a --hc-* block rather than another theme block. */
+  --hc-bg: #000000;
+  --hc-bg-elev: #0a0c10;
+  --hc-bg-sunken: #13161c;
+  --hc-bg-hover: #262b34;
+  --hc-fg: #ffffff;
+  --hc-fg-muted: #e8eaee;
+  --hc-fg-faint: #d4d8df;
+  --hc-border: #a7aeba;
+  --hc-border-strong: #ffffff;
+  --hc-accent: #a9c8ff;
+  --hc-accent-fg: #000000;
+  --hc-accent-weak: #16213a;
+  --hc-focus: #cfe0ff;
+  --hc-danger: #ffb5b5;
+  --hc-danger-bg: #1b0c0d;
+  --hc-danger-border: #ffb5b5;
+  --hc-warn: #ffd89c;
+  --hc-warn-bg: #1b1509;
+  --hc-warn-border: #ffd89c;
+}
+
+/* High contrast ------------------------------------------------------------
+
+   Two blocks, one per way of asking for it, both remapping the real tokens to
+   whichever theme's --hc-* set is in scope. The media query is guarded with
+   :not([data-contrast="normal"]) for exactly the reason the dark media query
+   is guarded with :not([data-theme="light"]): an explicit choice of normal has
+   to beat the operating system's preference for more.
+
+   These come after the theme blocks deliberately. :root[data-contrast="high"]
+   and :root[data-theme="dark"] have equal specificity, so source order is what
+   decides, and high contrast has to be the thing that wins.
+
+   Contrast is a viewer preference only. There is no config key for it: an
+   operator who could force it would be overriding an accessibility setting
+   for someone they cannot see. */
+
+@media (prefers-contrast: more) {
+  :root:not([data-contrast="normal"]) {
+    --bg: var(--hc-bg);
+    --bg-elev: var(--hc-bg-elev);
+    --bg-sunken: var(--hc-bg-sunken);
+    --bg-hover: var(--hc-bg-hover);
+    --fg: var(--hc-fg);
+    --fg-muted: var(--hc-fg-muted);
+    --fg-faint: var(--hc-fg-faint);
+    --border: var(--hc-border);
+    --border-strong: var(--hc-border-strong);
+    --accent: var(--hc-accent);
+    --accent-fg: var(--hc-accent-fg);
+    --accent-weak: var(--hc-accent-weak);
+    --focus: var(--hc-focus);
+    --danger: var(--hc-danger);
+    --danger-bg: var(--hc-danger-bg);
+    --danger-border: var(--hc-danger-border);
+    --warn: var(--hc-warn);
+    --warn-bg: var(--hc-warn-bg);
+    --warn-border: var(--hc-warn-border);
+    /* A drop shadow is how the normal themes separate an elevated surface from
+       the page. High contrast separates it with a border instead, so the
+       shadow goes: a soft edge under a hard one only muddies it. */
+    --shadow: none;
+    --focus-width: 4px;
+    --hairline: 2px;
+  }
+}
+
+:root[data-contrast="high"] {
+  --bg: var(--hc-bg);
+  --bg-elev: var(--hc-bg-elev);
+  --bg-sunken: var(--hc-bg-sunken);
+  --bg-hover: var(--hc-bg-hover);
+  --fg: var(--hc-fg);
+  --fg-muted: var(--hc-fg-muted);
+  --fg-faint: var(--hc-fg-faint);
+  --border: var(--hc-border);
+  --border-strong: var(--hc-border-strong);
+  --accent: var(--hc-accent);
+  --accent-fg: var(--hc-accent-fg);
+  --accent-weak: var(--hc-accent-weak);
+  --focus: var(--hc-focus);
+  --danger: var(--hc-danger);
+  --danger-bg: var(--hc-danger-bg);
+  --danger-border: var(--hc-danger-border);
+  --warn: var(--hc-warn);
+  --warn-bg: var(--hc-warn-bg);
+  --warn-border: var(--hc-warn-border);
+  --shadow: none;
+  --focus-width: 4px;
+  --hairline: 2px;
 }
 
 /* 2. Base ================================================================== */
@@ -183,7 +332,7 @@ kbd {
   display: inline-block;
   min-width: 1.5em;
   padding: 0.1em 0.4em;
-  border: 1px solid var(--border-strong);
+  border: var(--hairline) solid var(--border-strong);
   border-bottom-width: 2px;
   border-radius: var(--radius-sm);
   background: var(--bg-elev);
@@ -193,8 +342,13 @@ kbd {
 }
 
 :focus-visible {
-  outline: 3px solid var(--focus);
+  outline: var(--focus-width) solid var(--focus);
+  /* The offset leaves a 2px gap, and the box-shadow fills that gap with the
+     page background. So the ring's immediate neighbour is always --bg, which
+     is the pair the contrast ratio was measured against: on an accent-filled
+     button the indicator stays visible instead of sitting blue on blue. */
   outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--bg);
   border-radius: var(--radius-sm);
 }
 
@@ -226,7 +380,7 @@ kbd {
   z-index: 50;
   transform: translate(-50%, -120%);
   padding: var(--sp-2) var(--sp-4);
-  border: 1px solid var(--border-strong);
+  border: var(--hairline) solid var(--border-strong);
   border-radius: 0 0 var(--radius) var(--radius);
   background: var(--bg-elev);
   color: var(--fg);
@@ -241,7 +395,7 @@ kbd {
   max-width: 48rem;
   margin: var(--sp-5) auto;
   padding: var(--sp-4);
-  border: 1px solid var(--warn-border);
+  border: var(--hairline) solid var(--warn-border);
   border-radius: var(--radius);
   background: var(--warn-bg);
   color: var(--warn);
@@ -256,7 +410,7 @@ kbd {
   min-height: var(--target);
   min-width: var(--target);
   padding: 0 var(--sp-3);
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-elev);
   color: var(--fg);
@@ -300,7 +454,7 @@ kbd {
   padding-block: var(--sp-3) var(--sp-2);
   background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(8px);
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--hairline) solid var(--border);
 }
 
 .toolbar-inner {
@@ -330,7 +484,7 @@ kbd {
   min-width: 0;
   min-height: var(--target);
   padding: 0 2.75rem 0 2.25rem;
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-elev);
   color: var(--fg);
@@ -410,7 +564,7 @@ kbd {
   display: grid;
   gap: var(--sp-2);
   padding: var(--sp-4);
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-left-width: 4px;
   border-radius: var(--radius);
   background: var(--bg-elev);
@@ -468,7 +622,7 @@ kbd {
   flex-wrap: wrap;
   gap: 0 var(--sp-2);
   padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-elev);
 }
@@ -569,7 +723,7 @@ kbd {
 
 .group[data-depth="0"] {
   padding: var(--sp-3) var(--sp-4) var(--sp-4);
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg-elev);
   box-shadow: var(--shadow);
@@ -655,7 +809,7 @@ kbd {
   margin-top: var(--sp-1);
   margin-left: calc(var(--indent) / 2);
   padding-left: var(--indent);
-  border-left: 1px solid var(--border);
+  border-left: var(--hairline) solid var(--border);
 }
 
 .subgroups {
@@ -691,7 +845,7 @@ kbd {
   height: 100%;
   min-height: var(--target);
   padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-elev);
   color: inherit;
@@ -743,7 +897,7 @@ kbd {
 
 .tag {
   padding: 0 0.4rem;
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-radius: 999px;
   color: var(--fg-faint);
   font-size: 0.7rem;
@@ -840,7 +994,7 @@ kbd {
   width: min(42rem, calc(100vw - 2rem));
   max-height: min(80vh, 40rem);
   padding: 0;
-  border: 1px solid var(--border-strong);
+  border: var(--hairline) solid var(--border-strong);
   border-radius: var(--radius-lg);
   background: var(--bg-elev);
   color: var(--fg);
@@ -861,14 +1015,14 @@ kbd {
 
 .palette-field {
   padding: var(--sp-3);
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--hairline) solid var(--border);
 }
 
 #palette-input {
   width: 100%;
   min-height: var(--target);
   padding: 0 var(--sp-3);
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-radius: var(--radius);
   background: var(--bg);
   color: var(--fg);
@@ -894,7 +1048,7 @@ kbd {
 
 .palette-option[aria-selected="true"] {
   background: var(--accent-weak);
-  outline: 1px solid var(--accent);
+  outline: var(--hairline) solid var(--accent);
 }
 
 .palette-option .opt-text {
@@ -923,7 +1077,7 @@ kbd {
 .palette-empty,
 .palette-foot {
   padding: var(--sp-3);
-  border-top: 1px solid var(--border);
+  border-top: var(--hairline) solid var(--border);
   color: var(--fg-muted);
   font-size: 0.82rem;
 }
@@ -948,6 +1102,140 @@ kbd {
   color: var(--fg-muted);
 }
 
+/* The settings popup ------------------------------------------------------ */
+
+.settings {
+  width: min(32rem, calc(100vw - 2rem));
+  /* .dialog caps the height, so the groups scroll rather than being clipped
+     when four of them plus their hints do not fit a short viewport. */
+  overflow-y: auto;
+  padding: var(--sp-5);
+  overscroll-behavior: contain;
+}
+
+.settings-title {
+  margin: 0 0 var(--sp-2);
+  font-size: 1.1rem;
+}
+
+/* The heading takes focus when the popup opens (see index.html), and a ring
+   around a heading reads as a fault rather than as guidance. The dialog's own
+   border is already the visible boundary. */
+.settings-title:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.settings-note {
+  margin: 0 0 var(--sp-4);
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+}
+
+.settings-groups {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+/* A real fieldset, so the group has an accessible name and the arrow keys
+   move within it. Its default border and padding are the only reason this
+   needs resetting. */
+.setting {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.setting-legend {
+  padding: 0 0 var(--sp-1);
+  color: var(--fg);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.setting-hint {
+  margin: 0 0 var(--sp-2);
+  color: var(--fg-faint);
+  font-size: 0.8rem;
+}
+
+/* Segmented control. The radios stay real radios: they are only moved out of
+   sight of the paint, never out of the tab order, so focus, arrow-key
+   navigation and the announced "2 of 3" all come from the platform. */
+/* A grid rather than a wrapping flex row. At 320px a three-option group has
+   to either fit or stack, and wrapping gave 2 + 1, with the orphan stretched
+   across the full width and reading as a different kind of control. auto-fit
+   drops to fewer columns instead, and collapses the empty track for the two
+   two-option groups so they stay evenly split. */
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(3.75rem, 1fr));
+  gap: var(--sp-1);
+  padding: var(--sp-1);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.segment {
+  position: relative;
+  min-width: 0;
+}
+
+.segment input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  /* The input covers its own label, so a pointer press lands on the control
+     the keyboard also reaches. */
+  cursor: pointer;
+}
+
+.segment-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  min-height: var(--target);
+  padding: 0 var(--sp-2);
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+  text-align: center;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.segment input:checked + .segment-label {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.segment input:hover:not(:checked) + .segment-label {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+/* The ring goes on the label, because the input itself is transparent and
+   sized to the label; :focus-visible on the input is what triggers it. */
+.segment input:focus-visible + .segment-label {
+  outline: var(--focus-width) solid var(--focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--bg-sunken);
+}
+
+.settings-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--sp-5);
+}
+
 /* 10. Footer =============================================================== */
 
 .appfoot {
@@ -956,12 +1244,20 @@ kbd {
 
 .status {
   padding-top: var(--sp-3);
-  border-top: 1px solid var(--border);
+  border-top: var(--hairline) solid var(--border);
   color: var(--fg-faint);
   font-size: 0.8rem;
 }
 
 /* 11. Density ============================================================== */
+
+/* data-density is written to <html> and nowhere else, by app.js, which
+   resolves it as: the viewer's stored choice, then config.layout.density, then
+   comfortable. Putting it on the root is what makes it reach the toolbar, the
+   dialogs, the tab strip and the diagram panel, none of which are inside the
+   portal element. Do not set it a second time further down the tree: a viewer
+   choosing comfortable over a compact config would then lose, because the
+   inner value would still match these descendant selectors. */
 
 [data-density="compact"] {
   --sp-5: 1rem;
@@ -990,6 +1286,15 @@ kbd {
 
 /* 12. Motion and print ===================================================== */
 
+/* Two ways in, the same declarations: the operating system's preference, and
+   the viewer's own choice in the settings menu for when the OS setting is not
+   what they want on this page.
+
+   There is deliberately no third state that forces motion back on. A viewer
+   whose OS asks for reduced motion asked for it, and a bookmark page is not
+   the place to offer to override that. The preference only ever points one
+   way, which is why "system" and "reduced" are the only two options. */
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -1003,6 +1308,19 @@ kbd {
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+html[data-motion="reduced"] {
+  scroll-behavior: auto;
+}
+
+html[data-motion="reduced"] *,
+html[data-motion="reduced"] *::before,
+html[data-motion="reduced"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
 }
 
 @media print {
@@ -1050,7 +1368,7 @@ kbd {
   max-width: 15rem;
   min-height: var(--target);
   padding: 0 var(--sp-1) 0 var(--sp-3);
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-bottom-color: transparent;
   border-radius: var(--radius) var(--radius) 0 0;
   background: var(--bg-sunken);
@@ -1119,7 +1437,7 @@ kbd {
   align-items: center;
   gap: var(--sp-1);
   padding-bottom: var(--sp-2);
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--hairline) solid var(--border);
 }
 
 .tabstrip-count {
@@ -1202,7 +1520,7 @@ body[data-focus-mode="on"] .framehost {
   display: grid;
   gap: var(--sp-2);
   padding-block: var(--sp-3) var(--sp-4);
-  border-top: 1px solid var(--warn-border);
+  border-top: var(--hairline) solid var(--warn-border);
   background: var(--warn-bg);
   color: var(--warn);
 }
@@ -1280,7 +1598,7 @@ body[data-focus-mode="on"] .framehost {
   flex: 0 0 auto;
   min-width: var(--target);
   min-height: var(--target);
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-elev);
   color: var(--fg-muted);
@@ -1330,7 +1648,7 @@ body[data-focus-mode="on"] .framehost {
   gap: var(--sp-2);
   margin-block: var(--sp-4);
   padding: var(--sp-2) var(--sp-3) var(--sp-3);
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg-elev);
   box-shadow: var(--shadow);
@@ -1418,7 +1736,7 @@ body[data-focus-mode="on"] .framehost {
   position: relative;
   height: clamp(16rem, 52vh, 44rem);
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-sunken);
   /* A finger still scrolls the page and still pinch-zooms it: dragging the

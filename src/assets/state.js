@@ -7,14 +7,161 @@
 // which is how the tests run without a browser.
 
 const KEY_THEME = "quickportal.theme";
+const KEY_CONTRAST = "quickportal.contrast";
+const KEY_DENSITY = "quickportal.density";
+const KEY_MOTION = "quickportal.motion";
 const KEY_COLLAPSED = "quickportal.collapsed";
 const KEY_QUERY = "quickportal.query";
 const KEY_OPEN_TABS = "quickportal.openTabs";
 const KEY_DIAGRAM_OPEN = "quickportal.diagramOpen";
 
-const THEMES = ["auto", "light", "dark"];
-
+/** Kept as named exports because the theme predates the settings menu and
+ *  both are part of this module's published surface. PREFERENCES.theme below
+ *  is the single source of truth for both values. */
 export const DEFAULT_THEME = "auto";
+
+/**
+ * The appearance preferences the settings menu offers, in the order it shows
+ * them. Each one is an independent enum with its own key and its own default,
+ * read and written independently, so a corrupt or missing value for one never
+ * affects another.
+ *
+ * `auto` and `system` mean "do not interfere": the stylesheet is left to its
+ * media queries. They are still real, storable choices, which is what lets a
+ * viewer go back to following the OS after having once overridden it.
+ *
+ * Density is the one whose default is not fixed here: it comes from the
+ * config's `layout.density`, and this table's "comfortable" is only the
+ * fallback for when there is no config value either. See resolvePreference().
+ *
+ * Contrast and motion are deliberately absent from the config schema. Both are
+ * accessibility preferences belonging to the person reading the page, and an
+ * operator who could force either would be overriding an OS-level setting for
+ * someone they cannot see.
+ */
+export const PREFERENCES = Object.freeze({
+  theme: Object.freeze({
+    key: KEY_THEME,
+    options: Object.freeze(["auto", "light", "dark"]),
+    default: "auto",
+  }),
+  contrast: Object.freeze({
+    key: KEY_CONTRAST,
+    options: Object.freeze(["auto", "normal", "high"]),
+    default: "auto",
+  }),
+  density: Object.freeze({
+    key: KEY_DENSITY,
+    options: Object.freeze(["comfortable", "compact"]),
+    default: "comfortable",
+  }),
+  motion: Object.freeze({
+    key: KEY_MOTION,
+    options: Object.freeze(["system", "reduced"]),
+    default: "system",
+  }),
+});
+
+/** @returns {string[]} the preference names, in the order to present them. */
+export function preferenceNames() {
+  return Object.keys(PREFERENCES);
+}
+
+/**
+ * @param {string} name a preference name
+ * @returns {{key: string, options: readonly string[], default: string}|null}
+ */
+function preference(name) {
+  return Object.prototype.hasOwnProperty.call(PREFERENCES, name)
+    ? PREFERENCES[name]
+    : null;
+}
+
+/**
+ * The remembered value of one preference, or null when the viewer has never
+ * chosen it.
+ *
+ * This is the accessor anything respecting "the viewer's choice beats the
+ * config" wants. getPreference() cannot answer it: it returns the default both
+ * for a deliberate choice of the default and for nothing stored at all, so a
+ * caller could not tell them apart and a config value would either always win
+ * or always lose.
+ *
+ * @param {string} name
+ * @param {object} [storage]
+ * @returns {string|null}
+ */
+export function getStoredPreference(name, storage) {
+  const pref = preference(name);
+  if (!pref) return null;
+  const value = readRaw(pref.key, storage);
+  return pref.options.includes(value) ? value : null;
+}
+
+/**
+ * @param {string} name
+ * @param {object} [storage]
+ * @returns {string} the remembered value, or this preference's default.
+ */
+export function getPreference(name, storage) {
+  const pref = preference(name);
+  if (!pref) return "";
+  return getStoredPreference(name, storage) ?? pref.default;
+}
+
+/**
+ * Remember one preference. An unrecognised value is refused rather than
+ * stored, so a caller's typo cannot put the page into a state no stylesheet
+ * covers.
+ *
+ * @param {string} name
+ * @param {string} value one of this preference's options
+ * @param {object} [storage]
+ * @returns {boolean} whether it was remembered.
+ */
+export function setPreference(name, value, storage) {
+  const pref = preference(name);
+  if (!pref || !pref.options.includes(value)) return false;
+  return writeRaw(pref.key, value, storage);
+}
+
+/**
+ * Forget one preference, returning it to following the config or the system.
+ *
+ * @param {string} name
+ * @param {object} [storage]
+ * @returns {boolean} whether it was cleared.
+ */
+export function clearPreference(name, storage) {
+  const pref = preference(name);
+  if (!pref) return false;
+  return removeRaw(pref.key, storage);
+}
+
+/**
+ * The value to apply for one preference, given what the config asked for.
+ *
+ * The rule, the same one the theme has always used: a stored choice wins, then
+ * the config's value, then the built-in default. Which is why a config edit
+ * cannot fight a choice the viewer has made, and why a viewer who has chosen
+ * nothing still gets what the operator configured.
+ *
+ * `configValue` is ignored unless it is one of this preference's options, so a
+ * typo in the config falls through to the default rather than to nothing.
+ *
+ * @param {string} name
+ * @param {string|null|undefined} configValue the config's value, if it has one
+ * @param {object} [storage]
+ * @returns {string}
+ */
+export function resolvePreference(name, configValue, storage) {
+  const pref = preference(name);
+  if (!pref) return "";
+  const stored = getStoredPreference(name, storage);
+  if (stored !== null) return stored;
+  if (pref.options.includes(configValue)) return configValue;
+  return pref.default;
+}
 
 // Resolved per call rather than at import time, so this module can be imported
 // where no DOM exists.
@@ -61,12 +208,15 @@ function removeRaw(key, storage) {
 }
 
 /**
+ * Theme, in the vocabulary that predates the settings menu. These three are
+ * thin wrappers over the generic preference accessors so there is one place
+ * that decides what a valid theme is.
+ *
  * @param {object} [storage]
  * @returns {"auto"|"light"|"dark"} the remembered theme, or "auto".
  */
 export function getTheme(storage) {
-  const value = readRaw(KEY_THEME, storage);
-  return THEMES.includes(value) ? value : DEFAULT_THEME;
+  return /** @type {"auto"|"light"|"dark"} */ (getPreference("theme", storage));
 }
 
 /**
@@ -82,8 +232,7 @@ export function getTheme(storage) {
  * @returns {string|null}
  */
 export function getStoredTheme(storage) {
-  const value = readRaw(KEY_THEME, storage);
-  return THEMES.includes(value) ? value : null;
+  return getStoredPreference("theme", storage);
 }
 
 /**
@@ -92,8 +241,7 @@ export function getStoredTheme(storage) {
  * @returns {boolean} whether it was remembered.
  */
 export function setTheme(theme, storage) {
-  if (!THEMES.includes(theme)) return false;
-  return writeRaw(KEY_THEME, theme, storage);
+  return setPreference("theme", theme, storage);
 }
 
 function readCollapsedMap(storage) {

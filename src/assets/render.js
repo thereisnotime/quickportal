@@ -310,7 +310,14 @@ export function renderPortal(root, config, handlers) {
 }
 
 /** Layout knobs from the config, applied as scoped custom properties.
- *  This is CSSOM, not an inline style attribute, so the CSP is satisfied. */
+ *  This is CSSOM, not an inline style attribute, so the CSP is satisfied.
+ *
+ *  Density is deliberately not set here. It is a viewer preference layered
+ *  over `layout.density`, so app.js resolves the two and writes the one
+ *  surviving value to <html>. Writing it here as well would mean a viewer who
+ *  picked comfortable over a compact config still matched the compact
+ *  descendant selectors through this element, and their choice would do
+ *  nothing. One writer, on the root. */
 function applyLayout(root, config) {
   const layout = config.layout || {};
   const width = String(layout.minCardWidth || "").trim();
@@ -318,7 +325,6 @@ function applyLayout(root, config) {
     "--min-card-width",
     CSS_LENGTH.test(width) ? width : "14rem",
   );
-  root.dataset.density = layout.density === "compact" ? "compact" : "comfortable";
 }
 
 function renderHead(parts, config) {

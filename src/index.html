@@ -1,5 +1,22 @@
 <!doctype html>
-<html lang="en" data-theme="auto" data-density="comfortable">
+<!--
+  The appearance preferences live on <html> as data attributes: the
+  stylesheet selects on them and app.js is the only thing that writes them.
+  The root is the only element that is an ancestor of everything, and the
+  toolbar, the dialogs, the tab strip and the frame host are all outside
+  #portal, so a preference set anywhere lower would be visibly half applied.
+
+  These are also the pre-JavaScript values, which is why they are the
+  defaults rather than blank: auto and system mean "leave the media queries
+  alone", so the page renders correctly before app.js has run at all.
+-->
+<html
+  lang="en"
+  data-theme="auto"
+  data-contrast="auto"
+  data-density="comfortable"
+  data-motion="system"
+>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -44,9 +61,9 @@
             <span class="btn-label">Commands</span>
             <kbd class="kbd-inline" aria-hidden="true">Ctrl K</kbd>
           </button>
-          <button id="theme-toggle" class="btn" type="button">
+          <button id="settings-open" class="btn" type="button" aria-haspopup="dialog">
             <span class="theme-glyph" aria-hidden="true">&#9681;</span>
-            <span class="btn-label" id="theme-label">Theme: auto</span>
+            <span class="btn-label">Appearance</span>
           </button>
           <button id="reload-now" class="btn" type="button">
             <span aria-hidden="true">&#8635;</span>
@@ -144,7 +161,125 @@
         <dt><kbd>?</kbd></dt>
         <dd>Show this list</dd>
       </dl>
+      <p class="settings-note">
+        Theme, contrast, density and motion are in the Appearance popup, and each one can
+        also be changed from the command palette.
+      </p>
       <button class="btn" type="button" data-close-dialog>Close</button>
+    </dialog>
+    <!--
+      One popup for every appearance preference. Each is a real fieldset of
+      real radios: the group gets its accessible name from the legend, the
+      arrow keys move within it, and the platform announces which of how many
+      is selected. The inputs are transparent and cover their labels rather
+      than being hidden, so nothing here depends on JavaScript to be
+      focusable.
+    -->
+    <dialog id="settings" class="dialog settings" aria-labelledby="settings-title">
+      <!--
+        autofocus on the heading, not on the first radio. showModal()
+        otherwise focuses the first focusable thing it finds, which is the
+        theme group's *first* radio rather than its checked one, so the ring
+        would sit on "Auto" while "Dark" was selected. Starting on the
+        heading also means the popup announces its own name on open, and the
+        first Tab lands on each group's checked option the way the platform
+        intends.
+      -->
+      <h2 class="settings-title" id="settings-title" tabindex="-1" autofocus>Appearance</h2>
+      <p class="settings-note">
+        Remembered in this browser only. Nothing is sent anywhere.
+      </p>
+
+      <div class="settings-groups">
+        <fieldset class="setting" data-setting="theme">
+          <legend class="setting-legend">Theme</legend>
+          <p class="setting-hint" id="hint-theme">Auto follows your system setting.</p>
+          <div class="segmented">
+            <span class="segment">
+              <input type="radio" name="theme" id="theme-auto" value="auto"
+                     aria-describedby="hint-theme" />
+              <label class="segment-label" for="theme-auto">Auto</label>
+            </span>
+            <span class="segment">
+              <input type="radio" name="theme" id="theme-light" value="light"
+                     aria-describedby="hint-theme" />
+              <label class="segment-label" for="theme-light">Light</label>
+            </span>
+            <span class="segment">
+              <input type="radio" name="theme" id="theme-dark" value="dark"
+                     aria-describedby="hint-theme" />
+              <label class="segment-label" for="theme-dark">Dark</label>
+            </span>
+          </div>
+        </fieldset>
+
+        <fieldset class="setting" data-setting="contrast">
+          <legend class="setting-legend">Contrast</legend>
+          <p class="setting-hint" id="hint-contrast">
+            High strengthens borders, text and focus rings. Auto follows your system setting.
+          </p>
+          <div class="segmented">
+            <span class="segment">
+              <input type="radio" name="contrast" id="contrast-auto" value="auto"
+                     aria-describedby="hint-contrast" />
+              <label class="segment-label" for="contrast-auto">Auto</label>
+            </span>
+            <span class="segment">
+              <input type="radio" name="contrast" id="contrast-normal" value="normal"
+                     aria-describedby="hint-contrast" />
+              <label class="segment-label" for="contrast-normal">Normal</label>
+            </span>
+            <span class="segment">
+              <input type="radio" name="contrast" id="contrast-high" value="high"
+                     aria-describedby="hint-contrast" />
+              <label class="segment-label" for="contrast-high">High</label>
+            </span>
+          </div>
+        </fieldset>
+
+        <fieldset class="setting" data-setting="density">
+          <legend class="setting-legend">Density</legend>
+          <p class="setting-hint" id="hint-density">
+            Compact tightens spacing. Until you choose, this follows the portal's own setting.
+          </p>
+          <div class="segmented">
+            <span class="segment">
+              <input type="radio" name="density" id="density-comfortable" value="comfortable"
+                     aria-describedby="hint-density" />
+              <label class="segment-label" for="density-comfortable">Comfortable</label>
+            </span>
+            <span class="segment">
+              <input type="radio" name="density" id="density-compact" value="compact"
+                     aria-describedby="hint-density" />
+              <label class="segment-label" for="density-compact">Compact</label>
+            </span>
+          </div>
+        </fieldset>
+
+        <fieldset class="setting" data-setting="motion">
+          <legend class="setting-legend">Motion</legend>
+          <p class="setting-hint" id="hint-motion">
+            Reduced turns off transitions. If your system already asks for reduced motion,
+            that is honoured either way.
+          </p>
+          <div class="segmented">
+            <span class="segment">
+              <input type="radio" name="motion" id="motion-system" value="system"
+                     aria-describedby="hint-motion" />
+              <label class="segment-label" for="motion-system">System</label>
+            </span>
+            <span class="segment">
+              <input type="radio" name="motion" id="motion-reduced" value="reduced"
+                     aria-describedby="hint-motion" />
+              <label class="segment-label" for="motion-reduced">Reduced</label>
+            </span>
+          </div>
+        </fieldset>
+      </div>
+
+      <p class="settings-foot">
+        <button class="btn" type="button" data-close-dialog>Done</button>
+      </p>
     </dialog>
   </body>
 </html>

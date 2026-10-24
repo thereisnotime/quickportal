@@ -16,6 +16,9 @@ a pod restart and without a reload.
 - **YAML or JSON**, validated in the browser, with errors shown on the page
   naming the exact path rather than leaving you a blank screen.
 - Usable at 320px and on a 4K display, light and dark, keyboard driven.
+- **Appearance popup**: theme, high contrast, density and reduced motion,
+  each following your operating system until you say otherwise, each
+  remembered in your own browser and sent nowhere.
 - **Optionally** open apps inside the page in a tab strip, off by default.
 - **Optionally** an architecture diagram panel with pan, zoom and export, from
   an SVG you supply. Also off by default.

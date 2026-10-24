@@ -6,6 +6,13 @@ import assert from "node:assert/strict";
 
 import {
   DEFAULT_THEME,
+  PREFERENCES,
+  preferenceNames,
+  getPreference,
+  getStoredPreference,
+  setPreference,
+  clearPreference,
+  resolvePreference,
   getTheme,
   getStoredTheme,
   setTheme,
@@ -336,4 +343,137 @@ test("the diagram panel state survives storage being unavailable or full", () =>
   assert.equal(getDiagramOpen(full), false);
 
   assert.equal(getDiagramOpen(null), false, "no storage at all is the closed default");
+});
+
+// ---------------------------------------------------------------------------
+// Appearance preferences
+// ---------------------------------------------------------------------------
+
+test("every preference round-trips and defaults on its own", () => {
+  const storage = createMemoryStorage();
+
+  for (const name of preferenceNames()) {
+    const pref = PREFERENCES[name];
+    assert.equal(getPreference(name, storage), pref.default, `${name} starts at its default`);
+    assert.equal(getStoredPreference(name, storage), null, `${name} is not yet a choice`);
+
+    for (const option of pref.options) {
+      assert.equal(setPreference(name, option, storage), true);
+      assert.equal(getPreference(name, storage), option);
+      assert.equal(getStoredPreference(name, storage), option);
+    }
+
+    assert.equal(clearPreference(name, storage), true);
+    assert.equal(getStoredPreference(name, storage), null, `${name} forgets on request`);
+    assert.equal(getPreference(name, storage), pref.default);
+  }
+});
+
+test("the four preferences the settings menu offers are the four it offers", () => {
+  // A guard on the contract rather than on the implementation: contrast and
+  // motion must stay viewer-only, and nothing may quietly join the set.
+  assert.deepEqual(preferenceNames(), ["theme", "contrast", "density", "motion"]);
+  assert.deepEqual(PREFERENCES.theme.options, ["auto", "light", "dark"]);
+  assert.deepEqual(PREFERENCES.contrast.options, ["auto", "normal", "high"]);
+  assert.deepEqual(PREFERENCES.density.options, ["comfortable", "compact"]);
+  assert.deepEqual(PREFERENCES.motion.options, ["system", "reduced"]);
+  assert.equal(PREFERENCES.contrast.default, "auto");
+  assert.equal(PREFERENCES.motion.default, "system");
+});
+
+test("an unrecognised value is neither stored nor returned", () => {
+  const storage = createMemoryStorage({ "quickportal.contrast": "extreme" });
+
+  assert.equal(getPreference("contrast", storage), "auto", "junk falls back to the default");
+  assert.equal(getStoredPreference("contrast", storage), null, "junk is not a choice");
+  assert.equal(setPreference("contrast", "extreme", storage), false);
+  assert.equal(storage.getItem("quickportal.contrast"), "extreme", "the junk is left alone");
+});
+
+test("an unknown preference name is refused rather than invented", () => {
+  const storage = createMemoryStorage();
+
+  assert.equal(getPreference("fontSize", storage), "");
+  assert.equal(getStoredPreference("fontSize", storage), null);
+  assert.equal(setPreference("fontSize", "huge", storage), false);
+  assert.equal(clearPreference("fontSize", storage), false);
+  assert.equal(resolvePreference("fontSize", "huge", storage), "");
+});
+
+test("one corrupt key does not disturb the others", () => {
+  const storage = createMemoryStorage({
+    "quickportal.theme": "dark",
+    "quickportal.contrast": "{]",
+    "quickportal.density": "compact",
+  });
+
+  assert.equal(getPreference("theme", storage), "dark");
+  assert.equal(getPreference("contrast", storage), "auto", "the corrupt one falls back");
+  assert.equal(getPreference("density", storage), "compact");
+  assert.equal(getPreference("motion", storage), "system", "the absent one defaults");
+});
+
+test("preferences survive storage being unavailable or full", () => {
+  for (const storage of [hostileStorage(), fullStorage()]) {
+    for (const name of preferenceNames()) {
+      assert.equal(getPreference(name, storage), PREFERENCES[name].default);
+      assert.equal(getStoredPreference(name, storage), null);
+      assert.equal(setPreference(name, PREFERENCES[name].options[1], storage), false);
+      // Still the default: nothing was remembered, and nothing threw.
+      assert.equal(getPreference(name, storage), PREFERENCES[name].default);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// resolvePreference: stored beats config, config beats default
+// ---------------------------------------------------------------------------
+
+test("a stored choice beats the config", () => {
+  const storage = createMemoryStorage({ "quickportal.density": "comfortable" });
+
+  assert.equal(resolvePreference("density", "compact", storage), "comfortable");
+});
+
+test("the config supplies the value when nothing is stored", () => {
+  const storage = createMemoryStorage();
+
+  assert.equal(resolvePreference("density", "compact", storage), "compact");
+  assert.equal(resolvePreference("theme", "dark", storage), "dark");
+});
+
+test("the built-in default is the last resort", () => {
+  const storage = createMemoryStorage();
+
+  assert.equal(resolvePreference("density", null, storage), "comfortable");
+  assert.equal(resolvePreference("density", undefined, storage), "comfortable");
+  assert.equal(resolvePreference("theme", "", storage), "auto");
+});
+
+test("a config value that is not an option falls through to the default", () => {
+  const storage = createMemoryStorage();
+
+  assert.equal(resolvePreference("density", "roomy", storage), "comfortable");
+  assert.equal(resolvePreference("theme", "sepia", storage), "auto");
+});
+
+test("choosing the default deliberately still beats the config", () => {
+  // The distinction getStoredPreference() exists for: "auto" chosen on purpose
+  // is a choice, and a config edit must not undo it.
+  const storage = createMemoryStorage();
+  assert.equal(resolvePreference("theme", "dark", storage), "dark");
+
+  setPreference("theme", "auto", storage);
+  assert.equal(resolvePreference("theme", "dark", storage), "auto");
+});
+
+test("resolution survives storage being unavailable", () => {
+  const storage = hostileStorage();
+
+  assert.equal(resolvePreference("theme", "dark", storage), "dark", "the config still applies");
+  // Nothing to resolve against is the shape contrast and motion always have:
+  // app.js never passes them a config value, because the config cannot set
+  // them. They land on their default and stay there until the viewer chooses.
+  assert.equal(resolvePreference("contrast", null, storage), "auto");
+  assert.equal(resolvePreference("motion", null, storage), "system");
 });

@@ -11,8 +11,12 @@
 
 import { parseConfig, normalizeConfig, indexItems } from "./config.js";
 import {
-  getStoredTheme,
-  setTheme,
+  PREFERENCES,
+  preferenceNames,
+  getStoredPreference,
+  getPreference,
+  setPreference,
+  resolvePreference,
   setCollapsed,
   getQuery,
   setQuery,
@@ -46,14 +50,37 @@ import {
 } from "./diagram.js";
 
 const CONFIG_URL = "./config/config.yaml";
-const THEMES = ["auto", "light", "dark"];
+const THEMES = PREFERENCES.theme.options;
+
+/**
+ * Which appearance preferences the config is allowed to supply a default for,
+ * and under which key.
+ *
+ * Theme and density only. Contrast and motion are deliberately absent: both
+ * are accessibility preferences belonging to the person reading the page, and
+ * an operator who could force either would be overriding an operating-system
+ * setting for someone they cannot see.
+ */
+const CONFIG_BACKED = {
+  theme: (cfg) => (cfg ? cfg.theme : null),
+  density: (cfg) => (cfg && cfg.layout ? cfg.layout.density : null),
+};
+
+/** How each preference is named to the viewer, in announcements and in the
+ *  command palette. The popup's own labels are in the markup. */
+const PREFERENCE_LABELS = {
+  theme: "Theme",
+  contrast: "Contrast",
+  density: "Density",
+  motion: "Motion",
+};
 
 const dom = {
   root: document.getElementById("portal"),
   search: document.getElementById("search"),
   searchClear: document.getElementById("search-clear"),
-  themeToggle: document.getElementById("theme-toggle"),
-  themeLabel: document.getElementById("theme-label"),
+  settingsOpen: document.getElementById("settings-open"),
+  settings: document.getElementById("settings"),
   reload: document.getElementById("reload-now"),
   paletteOpen: document.getElementById("palette-open"),
   palette: document.getElementById("palette"),
@@ -113,20 +140,60 @@ function safely(fn, fallback) {
 }
 
 /* -------------------------------------------------------------------------
- * Theme
+ * Appearance preferences
+ *
+ * Four enums (theme, contrast, density, motion), each written to <html> as a
+ * data attribute and nowhere else. The stylesheet selects on those attributes;
+ * this module never touches a colour or a spacing value, and never writes an
+ * inline style, which is what keeps `style-src 'self'` satisfied.
  * ---------------------------------------------------------------------- */
 
-function applyTheme(theme) {
-  const value = THEMES.includes(theme) ? theme : "auto";
-  // data-theme on <html> is what app.css checks to beat the system preference.
-  document.documentElement.dataset.theme = value;
-  if (dom.themeLabel) dom.themeLabel.textContent = `Theme: ${value}`;
-  if (dom.themeToggle) {
-    dom.themeToggle.setAttribute(
-      "aria-label",
-      `Theme: ${value}. Activate to switch to ${nextTheme(value)}.`,
-    );
-  }
+/**
+ * Write one preference to the root element. Unrecognised values fall back to
+ * the preference's default rather than being written through, so the page can
+ * never end up in a state no stylesheet covers.
+ *
+ * @param {string} name a key of PREFERENCES
+ * @param {string} value
+ * @returns {string} the value actually applied.
+ */
+function applyPreference(name, value) {
+  const pref = PREFERENCES[name];
+  if (!pref) return "";
+  const applied = pref.options.includes(value) ? value : pref.default;
+  document.documentElement.dataset[name] = applied;
+  return applied;
+}
+
+/** @returns {string} the value currently on the root element. */
+function currentPreference(name) {
+  const pref = PREFERENCES[name];
+  if (!pref) return "";
+  const value = document.documentElement.dataset[name];
+  return pref.options.includes(value) ? value : pref.default;
+}
+
+/**
+ * Record a choice and apply it. Storing it is also what makes the config's own
+ * value stop applying from here on, for the two preferences the config can
+ * supply.
+ */
+function choosePreference(name, value) {
+  const applied = applyPreference(name, value);
+  if (!applied) return;
+  safely(() => setPreference(name, applied), null);
+  syncSettingsForm();
+  announce(`${PREFERENCE_LABELS[name] || name} set to ${applied}.`);
+}
+
+/** Cycle one preference through its options, for the palette and for the
+ *  keyboard. */
+function cyclePreference(name) {
+  const pref = PREFERENCES[name];
+  if (!pref) return;
+  const options = pref.options;
+  const next = options[(options.indexOf(currentPreference(name)) + 1) % options.length];
+  choosePreference(name, next);
 }
 
 function nextTheme(theme) {
@@ -134,19 +201,74 @@ function nextTheme(theme) {
 }
 
 function currentTheme() {
-  const value = document.documentElement.dataset.theme;
-  return THEMES.includes(value) ? value : "auto";
+  return currentPreference("theme");
+}
+
+function cycleTheme() {
+  cyclePreference("theme");
+}
+
+/** Apply every preference from storage, for the first paint. */
+function applyStoredPreferences() {
+  for (const name of preferenceNames()) {
+    applyPreference(name, safely(() => getPreference(name), null) || PREFERENCES[name].default);
+  }
 }
 
 /**
- * The viewer's own choice wins over the config, which is the point of the
- * toggle. state.getStoredTheme() answers null when nothing is remembered, so a
- * deliberate pick of "auto" is still a pick and still beats `theme` in the
- * config.
+ * Re-resolve the two preferences the config can supply a default for, now
+ * that there is a config.
+ *
+ * resolvePreference() is what encodes the rule: a stored choice wins, then the
+ * config's value, then the built-in default. It answers null for "never
+ * chose", which is why a deliberate pick of "auto" is still a pick and still
+ * beats `theme:` in the config, and why a live config reload cannot undo a
+ * choice the viewer made between two polls.
  */
-function applyConfigTheme(theme) {
-  if (safely(() => getStoredTheme(), null) !== null) return;
-  applyTheme(theme);
+function applyConfigPreferences(cfg) {
+  for (const [name, read] of Object.entries(CONFIG_BACKED)) {
+    const fromConfig = safely(() => read(cfg), null);
+    const value = safely(() => resolvePreference(name, fromConfig), null);
+    applyPreference(name, value || PREFERENCES[name].default);
+  }
+  syncSettingsForm();
+}
+
+/* -------------------------------------------------------------------------
+ * The settings popup
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Point the popup's radios at the live values.
+ *
+ * Called whenever the popup opens and after anything changes a preference,
+ * including a config reload: the popup is a view of the root element's
+ * attributes, never a second place where the state lives, so it cannot drift.
+ */
+function syncSettingsForm() {
+  if (!dom.settings) return;
+  for (const name of preferenceNames()) {
+    const value = currentPreference(name);
+    for (const input of dom.settings.querySelectorAll(`input[name="${name}"]`)) {
+      input.checked = input.value === value;
+    }
+  }
+}
+
+function openSettings() {
+  syncSettingsForm();
+  openDialog(dom.settings);
+}
+
+function bindSettings() {
+  if (!dom.settings) return;
+  // One listener for all four groups: the input's name is the preference.
+  dom.settings.addEventListener("change", (event) => {
+    const input = event.target;
+    if (!input || input.type !== "radio") return;
+    if (!PREFERENCES[input.name]) return;
+    choosePreference(input.name, input.value);
+  });
 }
 
 /* -------------------------------------------------------------------------
@@ -231,7 +353,7 @@ function applyConfigText(text) {
   });
 
   document.title = config.title ? `${config.title} - QuickPortal` : "QuickPortal";
-  applyConfigTheme(config.theme);
+  applyConfigPreferences(config);
   syncFrames();
   syncDiagram();
   startWatching();
@@ -1415,10 +1537,18 @@ function paletteEntries() {
   entries.push(
     {
       kind: "Command",
-      name: "Switch theme",
-      meta: `currently ${currentTheme()}`,
-      run: cycleTheme,
+      name: "Appearance settings",
+      meta: "theme, contrast, density, motion",
+      run: openSettings,
     },
+    // One cycle entry per preference, so nothing in the popup is reachable
+    // only from inside the popup.
+    ...preferenceNames().map((name) => ({
+      kind: "Command",
+      name: `Cycle ${(PREFERENCE_LABELS[name] || name).toLowerCase()}`,
+      meta: `currently ${currentPreference(name)}`,
+      run: () => cyclePreference(name),
+    })),
     { kind: "Command", name: "Reload config now", meta: CONFIG_URL, run: refreshNow },
     {
       kind: "Command",
@@ -1588,15 +1718,6 @@ function openUrl(url, target) {
   else window.open(url, "_blank", "noopener");
 }
 
-function cycleTheme() {
-  const theme = nextTheme(currentTheme());
-  // setTheme is what records the choice; storing it is also what makes the
-  // config's own theme stop applying from here on.
-  applyTheme(theme);
-  safely(() => setTheme(theme), null);
-  announce(`Theme set to ${theme}.`);
-}
-
 /* -------------------------------------------------------------------------
  * Dialog plumbing
  * ---------------------------------------------------------------------- */
@@ -1636,7 +1757,7 @@ function bindKeyboard() {
       return;
     }
 
-    if (dom.palette.open || dom.shortcuts.open) return; // dialogs handle their own keys
+    if (dom.palette.open || dom.shortcuts.open || dom.settings.open) return; // dialogs handle their own keys
 
     if (event.key === "Escape" && focusMode) {
       // Focus mode first: the search box is not even on screen while it is on.
@@ -1691,7 +1812,10 @@ function bindKeyboard() {
 function init() {
   if (!dom.root) return;
 
-  applyTheme(safely(() => getStoredTheme(), null) || "auto");
+  // Before anything else, and before the first config arrives: the markup
+  // carries the defaults, so this is only ever a correction toward whatever
+  // the viewer chose last time.
+  applyStoredPreferences();
 
   const storedQuery = safely(() => getQuery(), "") || "";
   dom.search.value = storedQuery;
@@ -1700,7 +1824,7 @@ function init() {
   dom.search.addEventListener("input", runFilter);
   dom.search.addEventListener("search", runFilter); // the native clear affordance
   dom.searchClear.addEventListener("click", () => clearSearch(true));
-  dom.themeToggle.addEventListener("click", cycleTheme);
+  dom.settingsOpen.addEventListener("click", openSettings);
   dom.reload.addEventListener("click", () => {
     announce("Reloading the config.");
     refreshNow();
@@ -1710,6 +1834,13 @@ function init() {
 
   bindDialog(dom.palette);
   bindDialog(dom.shortcuts);
+  bindDialog(dom.settings);
+  bindSettings();
+  dom.settings.addEventListener("close", () => {
+    if (dom.settingsOpen && dom.settingsOpen.isConnected) {
+      dom.settingsOpen.focus({ preventScroll: true });
+    }
+  });
   dom.palette.addEventListener("close", () => {
     if (palette.opener && palette.opener.isConnected) {
       palette.opener.focus({ preventScroll: true });

@@ -19,8 +19,8 @@ node tools/validate-config.mjs --strict config.yaml # warnings fail too
 | `version` | integer | **required** | Must be `1`. A missing or newer version renders nothing, deliberately. |
 | `title` | string | `QuickPortal` | Page heading and `<title>`. |
 | `subtitle` | string | `""` | Shown under the title. |
-| `theme` | `auto` \| `light` \| `dark` | `auto` | A theme the viewer picks in the UI always wins over this. |
-| `layout.density` | `comfortable` \| `compact` | `comfortable` | `compact` tightens spacing, and on precise pointers only, target sizes. |
+| `theme` | `auto` \| `light` \| `dark` | `auto` | A default. A theme the viewer picks in the Appearance popup always wins over this. See [Appearance](#appearance). |
+| `layout.density` | `comfortable` \| `compact` | `comfortable` | `compact` tightens spacing, and on precise pointers only, target sizes. A default: the viewer can override it. See [Appearance](#appearance). |
 | `layout.minCardWidth` | CSS length | `14rem` | Drives the grid; the columns are computed from it. |
 | `reload.interval` | integer seconds | `30` | `0` disables polling. The manual reload button always works. |
 | `embedding.maxFrames` | integer 1-16 | `4` | Cap on apps open inside the portal at once. |
@@ -28,6 +28,45 @@ node tools/validate-config.mjs --strict config.yaml # warnings fail too
 | `diagram` | mapping | none | An architecture diagram panel. See below. |
 | `groups` | list of group | `[]` | The tree. |
 | `sets` | list of set | `[]` | Named groups of targets that open together. |
+
+## Appearance
+
+The viewer sets four things from the **Appearance** popup in the toolbar
+(`Ctrl`+`K` reaches each of them too). Every one is remembered in that
+browser's `localStorage` and nowhere else: there is no server, nothing is sent
+anywhere, and two people looking at the same portal can have different
+settings.
+
+| Preference | Options | Default | Can the config set it? |
+| --- | --- | --- | --- |
+| Theme | `auto`, `light`, `dark` | `auto` | Yes, `theme` |
+| Contrast | `auto`, `normal`, `high` | `auto` | No |
+| Density | `comfortable`, `compact` | `comfortable` | Yes, `layout.density` |
+| Motion | `system`, `reduced` | `system` | No |
+
+`auto` and `system` mean "follow the operating system": the page honours
+`prefers-color-scheme`, `prefers-contrast` and `prefers-reduced-motion`
+respectively, and keeps following them if they change while the page is open.
+
+**The config's value is a default, not an instruction.** For the two the config
+can set, the rule is: a choice the viewer has made wins, then your config
+value, then the built-in default. So `theme: dark` decides what a browser that
+has never been here sees, and nothing more. Once someone has chosen, a config
+edit will not move them, and neither will a live reload.
+
+Choosing `auto` counts as choosing. Someone who picks `auto` after having
+picked `dark` is saying "follow my system", and your `theme:` stops applying to
+them, which is not the same as never having touched the setting.
+
+**Contrast and motion have no config key, deliberately.** Both correspond to an
+operating-system accessibility setting, and an operator who could force either
+would be overriding that setting for someone they cannot see. If your portal
+needs to be high contrast for everyone, that is a conversation about the
+default palette, not a config key.
+
+High contrast strengthens borders, text and focus rings, drops the drop
+shadows, and works in both light and dark. Body text clears 4.5:1 against every
+surface it can land on, and borders and focus rings clear 3:1.
 
 ## Group
 
