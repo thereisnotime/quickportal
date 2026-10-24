@@ -17,7 +17,7 @@ spec:
     repoURL: https://git.example.com/example-org/quickportal.git
     # A tag, never a branch: the app ships as files, so a branch means the app
     # can change under you.
-    targetRevision: v0.4.1
+    targetRevision: v0.4.2
     path: .
     kustomize:
       # Where your own config goes.

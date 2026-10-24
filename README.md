@@ -39,7 +39,7 @@ spec:
   interval: 1h
   url: https://git.example.com/example-org/quickportal.git
   ref:
-    tag: v0.4.1
+    tag: v0.4.2
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -62,7 +62,7 @@ spec:
 spec:
   source:
     repoURL: https://git.example.com/example-org/quickportal.git
-    targetRevision: v0.4.1
+    targetRevision: v0.4.2
     path: .
 ```
 
@@ -74,7 +74,7 @@ in.
 ```yaml
 # your-repo/quickportal/kustomization.yaml
 resources:
-  - https://git.example.com/example-org/quickportal.git//?ref=v0.4.1
+  - https://git.example.com/example-org/quickportal.git//?ref=v0.4.2
   - ingress.yaml
 
 configMapGenerator:
